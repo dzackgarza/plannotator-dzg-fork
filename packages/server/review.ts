@@ -9,17 +9,16 @@
  *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
  */
 
-import { mkdirSync } from "fs";
 import { isRemoteSession, getServerPort } from "./remote";
-import { openBrowser } from "./browser";
 import { type DiffType, type GitContext, runGitDiff } from "./git";
 import { getRepoInfo } from "./repo";
-import { validateImagePath, validateUploadExtension, UPLOAD_DIR } from "./image";
+import { handleImage, handleUpload, handleAgents, handleServerReady, type OpencodeClient } from "./shared-handlers";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
 export { openBrowser } from "./browser";
 export { type DiffType, type DiffOption, type GitContext } from "./git";
+export { handleServerReady as handleReviewServerReady } from "./shared-handlers";
 
 // --- Types ---
 
@@ -45,11 +44,7 @@ export interface ReviewServerOptions {
   /** Called when server starts with the URL, remote status, and port */
   onReady?: (url: string, isRemote: boolean, port: number) => void;
   /** OpenCode client for querying available agents (OpenCode only) */
-  opencodeClient?: {
-    app: {
-      agents: (options?: object) => Promise<{ data?: Array<{ name: string; description?: string; mode: string; hidden?: boolean }> }>;
-    };
-  };
+  opencodeClient?: OpencodeClient;
 }
 
 export interface ReviewServerResult {
@@ -177,66 +172,17 @@ export async function startReviewServer(
 
           // API: Serve images (local paths or temp uploads)
           if (url.pathname === "/api/image") {
-            const imagePath = url.searchParams.get("path");
-            if (!imagePath) {
-              return new Response("Missing path parameter", { status: 400 });
-            }
-            const validation = validateImagePath(imagePath);
-            if (!validation.valid) {
-              return new Response(validation.error!, { status: 403 });
-            }
-            try {
-              const file = Bun.file(validation.resolved);
-              if (!(await file.exists())) {
-                return new Response("File not found", { status: 404 });
-              }
-              return new Response(file);
-            } catch {
-              return new Response("Failed to read file", { status: 500 });
-            }
+            return handleImage(req);
           }
 
           // API: Upload image -> save to temp -> return path
           if (url.pathname === "/api/upload" && req.method === "POST") {
-            try {
-              const formData = await req.formData();
-              const file = formData.get("file") as File;
-              if (!file) {
-                return new Response("No file provided", { status: 400 });
-              }
-
-              const extResult = validateUploadExtension(file.name);
-              if (!extResult.valid) {
-                return Response.json({ error: extResult.error }, { status: 400 });
-              }
-              mkdirSync(UPLOAD_DIR, { recursive: true });
-              const tempPath = `${UPLOAD_DIR}/${crypto.randomUUID()}.${extResult.ext}`;
-
-              await Bun.write(tempPath, file);
-              return Response.json({ path: tempPath, originalName: file.name });
-            } catch (err) {
-              const message =
-                err instanceof Error ? err.message : "Upload failed";
-              return Response.json({ error: message }, { status: 500 });
-            }
+            return handleUpload(req);
           }
 
           // API: Get available agents (OpenCode only)
           if (url.pathname === "/api/agents") {
-            if (!options.opencodeClient) {
-              return Response.json({ agents: [] });
-            }
-
-            try {
-              const result = await options.opencodeClient.app.agents({});
-              const agents = (result.data ?? [])
-                .filter((a) => a.mode === "primary" && !a.hidden)
-                .map((a) => ({ id: a.name, name: a.name, description: a.description }));
-
-              return Response.json({ agents });
-            } catch {
-              return Response.json({ agents: [], error: "Failed to fetch agents" });
-            }
+            return handleAgents(options.opencodeClient);
           }
 
           // API: Submit review feedback
@@ -306,17 +252,4 @@ export async function startReviewServer(
     waitForDecision: () => decisionPromise,
     stop: () => server.stop(),
   };
-}
-
-/**
- * Default behavior: open browser for local sessions
- */
-export async function handleReviewServerReady(
-  url: string,
-  isRemote: boolean,
-  _port: number
-): Promise<void> {
-  if (!isRemote) {
-    await openBrowser(url);
-  }
 }
