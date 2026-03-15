@@ -47,6 +47,8 @@ export interface ReviewServerOptions {
   onReady?: (url: string, isRemote: boolean, port: number) => void;
   /** OpenCode client for querying available agents (OpenCode only) */
   opencodeClient?: OpencodeClient;
+  /** Working directory for git and repo operations */
+  cwd?: string;
 }
 
 export interface ReviewServerResult {
@@ -83,7 +85,7 @@ const RETRY_DELAY_MS = 500;
 export async function startReviewServer(
   options: ReviewServerOptions
 ): Promise<ReviewServerResult> {
-  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady } = options;
+  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady, cwd } = options;
 
   const draftKey = contentHash(options.rawPatch);
   const editorAnnotations = createEditorAnnotationHandler();
@@ -98,7 +100,7 @@ export async function startReviewServer(
   const configuredPort = getServerPort();
 
   // Detect repo info (cached for this session)
-  const repoInfo = await getRepoInfo();
+  const repoInfo = await getRepoInfo(cwd);
 
   // Decision promise
   let resolveDecision: (result: {
@@ -158,7 +160,7 @@ export async function startReviewServer(
               const defaultBranch = gitContext?.defaultBranch || "main";
 
               // Run the new diff
-              const result = await runGitDiff(newDiffType, defaultBranch);
+              const result = await runGitDiff(newDiffType, defaultBranch, cwd);
 
               // Update state
               currentPatch = result.patch;
@@ -200,6 +202,7 @@ export async function startReviewServer(
               defaultBranch,
               filePath,
               oldPath,
+              cwd,
             );
             return Response.json(result);
           }
@@ -217,6 +220,9 @@ export async function startReviewServer(
               if (currentDiffType.startsWith("worktree:")) {
                 const parsed = parseWorktreeDiffType(currentDiffType);
                 if (parsed) cwd = parsed.path;
+              }
+              if (!cwd) {
+                cwd = options.cwd;
               }
 
               if (body.undo) {

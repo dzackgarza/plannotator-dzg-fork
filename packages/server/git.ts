@@ -26,9 +26,10 @@ export interface DiffResult {
 /**
  * Get the current branch name
  */
-export async function getCurrentBranch(): Promise<string> {
+export async function getCurrentBranch(cwd?: string): Promise<string> {
   try {
-    const result = await $`git rev-parse --abbrev-ref HEAD`.quiet();
+    const command = $`git rev-parse --abbrev-ref HEAD`.quiet();
+    const result = cwd ? await command.cwd(cwd) : await command;
     return result.text().trim();
   } catch {
     return "HEAD"; // Detached HEAD state
@@ -43,11 +44,11 @@ export async function getCurrentBranch(): Promise<string> {
  * 2. Fallback to checking if 'main' exists
  * 3. Final fallback to 'master'
  */
-export async function getDefaultBranch(): Promise<string> {
+export async function getDefaultBranch(cwd?: string): Promise<string> {
   // Try origin's HEAD first (most reliable for repos with remotes)
   try {
-    const result =
-      await $`git symbolic-ref refs/remotes/origin/HEAD`.quiet();
+    const command = $`git symbolic-ref refs/remotes/origin/HEAD`.quiet();
+    const result = cwd ? await command.cwd(cwd) : await command;
     const ref = result.text().trim();
     return ref.replace("refs/remotes/origin/", "");
   } catch {
@@ -56,7 +57,8 @@ export async function getDefaultBranch(): Promise<string> {
 
   // Fallback: check if main exists locally
   try {
-    await $`git show-ref --verify refs/heads/main`.quiet();
+    const command = $`git show-ref --verify refs/heads/main`.quiet();
+    await (cwd ? command.cwd(cwd) : command);
     return "main";
   } catch {
     // main doesn't exist
@@ -69,9 +71,10 @@ export async function getDefaultBranch(): Promise<string> {
 /**
  * List all git worktrees by parsing `git worktree list --porcelain`
  */
-export async function getWorktrees(): Promise<WorktreeInfo[]> {
+export async function getWorktrees(cwd?: string): Promise<WorktreeInfo[]> {
   try {
-    const result = await $`git worktree list --porcelain`.quiet().nothrow();
+    const command = $`git worktree list --porcelain`.quiet().nothrow();
+    const result = cwd ? await command.cwd(cwd) : await command;
     if (result.exitCode !== 0) return [];
 
     const text = result.text();
@@ -106,10 +109,10 @@ export async function getWorktrees(): Promise<WorktreeInfo[]> {
 /**
  * Get git context including branch info and available diff options
  */
-export async function getGitContext(): Promise<GitContext> {
+export async function getGitContext(cwd?: string): Promise<GitContext> {
   const [currentBranch, defaultBranch] = await Promise.all([
-    getCurrentBranch(),
-    getDefaultBranch(),
+    getCurrentBranch(cwd),
+    getDefaultBranch(cwd),
   ]);
 
   const diffOptions: DiffOption[] = [
@@ -126,8 +129,12 @@ export async function getGitContext(): Promise<GitContext> {
 
   // Discover worktrees (exposed separately from diff options)
   const [worktrees, currentTreePath] = await Promise.all([
-    getWorktrees(),
-    $`git rev-parse --show-toplevel`.quiet().then(r => r.text().trim()).catch(() => null),
+    getWorktrees(cwd),
+    (async () => {
+      const command = $`git rev-parse --show-toplevel`.quiet();
+      const result = cwd ? await command.cwd(cwd) : await command;
+      return result.text().trim();
+    })().catch(() => null),
   ]);
 
   const otherWorktrees = worktrees.filter(wt => wt.path !== currentTreePath);
@@ -197,7 +204,8 @@ export function parseWorktreeDiffType(diffType: string): { path: string; subType
  */
 export async function runGitDiff(
   diffType: DiffType,
-  defaultBranch: string = "main"
+  defaultBranch: string = "main",
+  cwd?: string,
 ): Promise<DiffResult> {
   let patch: string;
   let label: string;
@@ -271,40 +279,51 @@ export async function runGitDiff(
     switch (diffType) {
       case "uncommitted": {
         // Include tracked changes (staged + unstaged vs HEAD) and untracked new files
-        const trackedDiff = (await $`git diff HEAD --src-prefix=a/ --dst-prefix=b/`.quiet()).text();
-        const untrackedDiff = await getUntrackedFileDiffs();
+        const diffCommand = $`git diff HEAD --src-prefix=a/ --dst-prefix=b/`.quiet();
+        const trackedDiff = (cwd ? await diffCommand.cwd(cwd) : await diffCommand).text();
+        const untrackedDiff = await getUntrackedFileDiffs('a/', 'b/', cwd);
         patch = trackedDiff + untrackedDiff;
         label = "Uncommitted changes";
         break;
       }
 
       case "staged":
-        patch = (await $`git diff --staged --src-prefix=a/ --dst-prefix=b/`.quiet()).text();
+        {
+          const diffCommand = $`git diff --staged --src-prefix=a/ --dst-prefix=b/`.quiet();
+          patch = (cwd ? await diffCommand.cwd(cwd) : await diffCommand).text();
+        }
         label = "Staged changes";
         break;
 
       case "unstaged": {
         // Include unstaged changes to tracked files and untracked new files
-        const trackedDiff = (await $`git diff --src-prefix=a/ --dst-prefix=b/`.quiet()).text();
-        const untrackedDiff = await getUntrackedFileDiffs();
+        const diffCommand = $`git diff --src-prefix=a/ --dst-prefix=b/`.quiet();
+        const trackedDiff = (cwd ? await diffCommand.cwd(cwd) : await diffCommand).text();
+        const untrackedDiff = await getUntrackedFileDiffs('a/', 'b/', cwd);
         patch = trackedDiff + untrackedDiff;
         label = "Unstaged changes";
         break;
       }
 
       case "last-commit": {
-        const hasParent = (await $`git rev-parse --verify HEAD~1`.quiet().nothrow()).exitCode === 0;
+        const parentCommand = $`git rev-parse --verify HEAD~1`.quiet().nothrow();
+        const hasParent = (cwd ? await parentCommand.cwd(cwd) : await parentCommand).exitCode === 0;
         if (hasParent) {
-          patch = (await $`git diff HEAD~1..HEAD --src-prefix=a/ --dst-prefix=b/`.quiet()).text();
+          const diffCommand = $`git diff HEAD~1..HEAD --src-prefix=a/ --dst-prefix=b/`.quiet();
+          patch = (cwd ? await diffCommand.cwd(cwd) : await diffCommand).text();
         } else {
-          patch = (await $`git diff --root HEAD --src-prefix=a/ --dst-prefix=b/`.quiet()).text();
+          const diffCommand = $`git diff --root HEAD --src-prefix=a/ --dst-prefix=b/`.quiet();
+          patch = (cwd ? await diffCommand.cwd(cwd) : await diffCommand).text();
         }
         label = "Last commit";
         break;
       }
 
       case "branch":
-        patch = (await $`git diff ${defaultBranch}..HEAD --src-prefix=a/ --dst-prefix=b/`.quiet()).text();
+        {
+          const diffCommand = $`git diff ${defaultBranch}..HEAD --src-prefix=a/ --dst-prefix=b/`.quiet();
+          patch = (cwd ? await diffCommand.cwd(cwd) : await diffCommand).text();
+        }
         label = `Changes vs ${defaultBranch}`;
         break;
 

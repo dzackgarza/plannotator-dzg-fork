@@ -49,9 +49,10 @@ function getDirName(path: string): string | null {
 /**
  * Get current git branch
  */
-async function getCurrentBranch(): Promise<string | undefined> {
+async function getCurrentBranch(cwd?: string): Promise<string | undefined> {
   try {
-    const result = await $`git rev-parse --abbrev-ref HEAD`.quiet().nothrow();
+    const command = $`git rev-parse --abbrev-ref HEAD`.quiet().nothrow();
+    const result = cwd ? await command.cwd(cwd) : await command;
     if (result.exitCode === 0) {
       const branch = result.stdout.toString().trim();
       return branch && branch !== "HEAD" ? branch : undefined;
@@ -69,16 +70,17 @@ async function getCurrentBranch(): Promise<string | undefined> {
  * 2. Fall back to git repo root directory name
  * 3. Fall back to current working directory name
  */
-export async function getRepoInfo(): Promise<RepoInfo | null> {
+export async function getRepoInfo(cwd?: string): Promise<RepoInfo | null> {
   let branch: string | undefined;
 
   // Try git remote URL first
   try {
-    const result = await $`git remote get-url origin`.quiet().nothrow();
+    const command = $`git remote get-url origin`.quiet().nothrow();
+    const result = cwd ? await command.cwd(cwd) : await command;
     if (result.exitCode === 0) {
       const orgRepo = parseRemoteUrl(result.stdout.toString().trim());
       if (orgRepo) {
-        branch = await getCurrentBranch();
+        branch = await getCurrentBranch(cwd);
         return { display: orgRepo, branch };
       }
     }
@@ -88,11 +90,12 @@ export async function getRepoInfo(): Promise<RepoInfo | null> {
 
   // Fallback: git repo root name
   try {
-    const result = await $`git rev-parse --show-toplevel`.quiet().nothrow();
+    const command = $`git rev-parse --show-toplevel`.quiet().nothrow();
+    const result = cwd ? await command.cwd(cwd) : await command;
     if (result.exitCode === 0) {
       const repoName = getDirName(result.stdout.toString());
       if (repoName) {
-        branch = await getCurrentBranch();
+        branch = await getCurrentBranch(cwd);
         return { display: repoName, branch };
       }
     }
@@ -102,7 +105,7 @@ export async function getRepoInfo(): Promise<RepoInfo | null> {
 
   // Final fallback: current directory (no branch - not a git repo)
   try {
-    const dirName = getDirName(process.cwd());
+    const dirName = getDirName(cwd ?? process.cwd());
     if (dirName) {
       return { display: dirName };
     }

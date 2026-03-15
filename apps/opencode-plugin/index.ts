@@ -26,9 +26,14 @@ import {
   startAnnotateServer,
   handleAnnotateServerReady,
 } from "@plannotator/server/annotate";
-import { getGitContext, runGitDiff } from "@plannotator/server/git";
 import { writeRemoteShareLink } from "@plannotator/server/share-url";
-import { resolveMarkdownFile } from "@plannotator/server/resolve-file";
+import {
+  REVIEW_TOOL_DIFF_TYPES,
+  runPlannotatorAnnotateTool,
+  runPlannotatorReviewTool,
+  defaultAnnotateToolDependencies,
+  defaultReviewToolDependencies,
+} from "./tool-helpers";
 
 // @ts-ignore - Bun import attribute for text
 import indexHtml from "./plannotator.html" with { type: "text" };
@@ -90,10 +95,18 @@ export const PlannotatorPlugin: Plugin = async (ctx) => {
     // Register submit_plan as primary-only tool (hidden from sub-agents)
     config: async (opencodeConfig) => {
       const existingPrimaryTools = opencodeConfig.experimental?.primary_tools ?? [];
-      if (!existingPrimaryTools.includes("submit_plan")) {
+      const requiredPrimaryTools = [
+        "submit_plan",
+        "plannotator_review",
+        "plannotator_annotate",
+      ];
+      const missingPrimaryTools = requiredPrimaryTools.filter(
+        (toolName) => !existingPrimaryTools.includes(toolName),
+      );
+      if (missingPrimaryTools.length > 0) {
         opencodeConfig.experimental = {
           ...opencodeConfig.experimental,
-          primary_tools: [...existingPrimaryTools, "submit_plan"],
+          primary_tools: [...existingPrimaryTools, ...missingPrimaryTools],
         };
       }
     },
@@ -182,154 +195,40 @@ Do NOT proceed with implementation until your plan is approved.
           message: "Opening code review UI...",
         });
 
-        // Get git context (branches, available diff options)
-        const gitContext = await getGitContext();
+        // @ts-ignore - Event properties contain sessionID for command.executed events
+        const sessionID = event.properties?.sessionID;
+        if (!sessionID) {
+          return;
+        }
 
-        // Run git diff HEAD (uncommitted changes - default)
-        const { patch: rawPatch, label: gitRef, error: diffError } = await runGitDiff(
-          "uncommitted",
-          gitContext.defaultBranch
+        const message = await runPlannotatorReviewTool(
+          { diff_type: "uncommitted" },
+          {
+            sessionID,
+            messageID: "",
+            agent: "build",
+            abort: new AbortController().signal,
+            metadata() {},
+            async ask() {},
+          },
+          {
+            client: ctx.client,
+            directory: ctx.directory,
+            htmlContent: reviewHtmlContent,
+            getSharingEnabled,
+            getShareBaseUrl,
+          },
+          {
+            ...defaultReviewToolDependencies,
+            startReviewServer,
+            onReady: handleReviewServerReady,
+          },
         );
 
-        // Start server even if empty - user can switch diff types
-        const server = await startReviewServer({
-          rawPatch,
-          gitRef,
-          error: diffError,
-          origin: "opencode",
-          diffType: "uncommitted",
-          gitContext,
-          sharingEnabled: await getSharingEnabled(),
-          shareBaseUrl: getShareBaseUrl(),
-          htmlContent: reviewHtmlContent,
-          opencodeClient: ctx.client,
-          onReady: handleReviewServerReady,
-        });
-
-        const result = await server.waitForDecision();
-        await Bun.sleep(1500);
-        server.stop();
-
-        // Send feedback back to the session if provided
-        if (result.feedback) {
-          // @ts-ignore - Event properties contain sessionID for command.executed events
-          const sessionId = event.properties?.sessionID;
-
-          // Only try to send feedback if we have a valid session ID
-          if (sessionId) {
-            // Check agent switch setting (defaults to 'build' if not set)
-            const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== 'disabled';
-            const targetAgent = result.agentSwitch || 'build';
-
-            const message = result.approved
-              ? `# Code Review\n\nCode review completed — no changes requested.`
-              : `# Code Review Feedback\n\n${result.feedback}\n\nPlease address this feedback.`;
-
-            // Send feedback to agent
-            try {
-              await ctx.client.session.prompt({
-                path: { id: sessionId },
-                body: {
-                  ...(shouldSwitchAgent && { agent: targetAgent }),
-                  parts: [
-                    {
-                      type: "text",
-                      text: message,
-                    },
-                  ],
-                },
-              });
-            } catch {
-              // Session may not be available
-            }
-          }
-        }
-      }
-
-      // Handle /plannotator-annotate command
-      const isAnnotateCommand = commandName === "plannotator-annotate";
-
-      if (isCommandEvent && isAnnotateCommand) {
-        // @ts-ignore - Event properties contain arguments
-        const filePath = event.properties?.arguments || event.arguments || "";
-
-        if (!filePath) {
-          ctx.client.app.log({
-            level: "error",
-            message: "Usage: /plannotator-annotate <file.md>",
-          });
-          return;
-        }
-
         ctx.client.app.log({
           level: "info",
-          message: `Opening annotation UI for ${filePath}...`,
+          message,
         });
-
-        // Smart file resolution: exact path, case-insensitive relative, or bare filename
-        const projectRoot = process.cwd();
-        const resolved = await resolveMarkdownFile(filePath, projectRoot);
-
-        if (resolved.kind === "ambiguous") {
-          ctx.client.app.log({
-            level: "error",
-            message: `Ambiguous filename "${resolved.input}" — found ${resolved.matches.length} matches:\n${resolved.matches.map((m) => `  ${m}`).join("\n")}`,
-          });
-          return;
-        }
-        if (resolved.kind === "not_found") {
-          ctx.client.app.log({
-            level: "error",
-            message: `File not found: ${resolved.input}`,
-          });
-          return;
-        }
-
-        const absolutePath = resolved.path;
-        ctx.client.app.log({
-          level: "info",
-          message: `Resolved: ${absolutePath}`,
-        });
-        const markdown = await Bun.file(absolutePath).text();
-
-        // Start annotate server (reuses plan editor HTML)
-        const server = await startAnnotateServer({
-          markdown,
-          filePath: absolutePath,
-          origin: "opencode",
-          sharingEnabled: await getSharingEnabled(),
-          shareBaseUrl: getShareBaseUrl(),
-          htmlContent: htmlContent,
-          onReady: handleAnnotateServerReady,
-        });
-
-        const result = await server.waitForDecision();
-        await Bun.sleep(1500);
-        server.stop();
-
-        // Send feedback back to the session if provided
-        if (result.feedback) {
-          // @ts-ignore - Event properties contain sessionID for command.executed events
-          const sessionId = event.properties?.sessionID;
-
-          if (sessionId) {
-            try {
-              await ctx.client.session.prompt({
-                path: { id: sessionId },
-                body: {
-                  parts: [
-                    {
-                      type: "text",
-                      text: `# Markdown Annotations\n\nFile: ${absolutePath}\n\n${result.feedback}\n\nPlease address the annotation feedback above.`,
-                    },
-                  ],
-                },
-              });
-            } catch {
-              // Session may not be available
-            }
-          }
-        }
       }
     },
 
@@ -452,6 +351,61 @@ ${result.feedback}
 
 Please revise your plan based on this feedback and call \`submit_plan\` again when ready.`;
           }
+        },
+      }),
+      plannotator_review: tool({
+        description:
+          "Present git diff changes to the user for live code review and feedback. Use this whenever you want to show code changes to the user so they can review and annotate specific lines.",
+        args: {
+          diff_type: tool.schema
+            .enum(REVIEW_TOOL_DIFF_TYPES)
+            .optional()
+            .describe("Diff to review: uncommitted, staged, unstaged, last-commit, or branch"),
+        },
+        async execute(args, context) {
+          return runPlannotatorReviewTool(
+            args,
+            context,
+            {
+              client: ctx.client,
+              directory: ctx.directory,
+              htmlContent: reviewHtmlContent,
+              getSharingEnabled,
+              getShareBaseUrl,
+            },
+            {
+              ...defaultReviewToolDependencies,
+              startReviewServer,
+              onReady: handleReviewServerReady,
+            },
+          );
+        },
+      }),
+      plannotator_annotate: tool({
+        description:
+          "Present a markdown document to the user for live annotation and feedback. Use this whenever you want to show a markdown file to the user so they can review, annotate, and give corrections in real time.",
+        args: {
+          file_path: tool.schema
+            .string()
+            .describe("Path to the markdown file to present for annotation"),
+        },
+        async execute(args, context) {
+          return runPlannotatorAnnotateTool(
+            args,
+            context,
+            {
+              client: ctx.client,
+              directory: ctx.directory,
+              htmlContent,
+              getSharingEnabled,
+              getShareBaseUrl,
+            },
+            {
+              ...defaultAnnotateToolDependencies,
+              startAnnotateServer,
+              onReady: handleAnnotateServerReady,
+            },
+          );
         },
       }),
     },
