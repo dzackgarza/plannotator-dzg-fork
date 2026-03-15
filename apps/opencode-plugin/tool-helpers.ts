@@ -4,7 +4,6 @@ import type {
   AnnotateServerResult,
 } from "@plannotator/server/annotate";
 import type {
-  DiffType,
   GitContext,
   ReviewServerOptions,
   ReviewServerResult,
@@ -60,10 +59,11 @@ export interface AnnotateToolEnvironment {
 }
 
 export interface ReviewToolDependencies {
-  getGitContext: () => Promise<GitContext>;
+  getGitContext: (cwd?: string) => Promise<GitContext>;
   runGitDiff: (
     diffType: ReviewToolDiffType,
     defaultBranch: string,
+    cwd?: string,
   ) => Promise<{ patch: string; label: string; error?: string }>;
   startReviewServer: ReviewServerStarter;
   onReady: (url: string, isRemote: boolean, port: number) => void | Promise<void>;
@@ -97,23 +97,6 @@ export const defaultAnnotateToolDependencies: AnnotateToolDependencies = {
   onReady() {},
   sleep: Bun.sleep,
 };
-
-async function withWorkingDirectory<T>(
-  directory: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const previousDirectory = process.cwd();
-  if (previousDirectory === directory) {
-    return fn();
-  }
-
-  process.chdir(directory);
-  try {
-    return await fn();
-  } finally {
-    process.chdir(previousDirectory);
-  }
-}
 
 function buildReviewFeedbackMessage(
   approved: boolean,
@@ -236,11 +219,8 @@ export async function runPlannotatorReviewTool(
 ): Promise<string> {
   const diffType = args.diff_type ?? "uncommitted";
 
-  const { gitContext, diff } = await withWorkingDirectory(env.directory, async () => {
-    const gitContext = await deps.getGitContext();
-    const diff = await deps.runGitDiff(diffType, gitContext.defaultBranch);
-    return { gitContext, diff };
-  });
+  const gitContext = await deps.getGitContext(env.directory);
+  const diff = await deps.runGitDiff(diffType, gitContext.defaultBranch, env.directory);
 
   const server = await deps.startReviewServer({
     rawPatch: diff.patch,

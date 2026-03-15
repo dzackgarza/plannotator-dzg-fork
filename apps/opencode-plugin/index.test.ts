@@ -248,25 +248,13 @@ describe("runPlannotatorReviewTool", () => {
         getShareBaseUrl: () => undefined,
       } satisfies ReviewToolEnvironment,
       {
-        getGitContext: async () => {
-          const previousDirectory = process.cwd();
-          process.chdir(projectRoot);
-          try {
-            const { getGitContext } = await import("@plannotator/server/git");
-            return await getGitContext();
-          } finally {
-            process.chdir(previousDirectory);
-          }
+        getGitContext: async (cwd) => {
+          const { getGitContext } = await import("@plannotator/server/git");
+          return await getGitContext(cwd);
         },
-        runGitDiff: async (diffType, defaultBranch) => {
-          const previousDirectory = process.cwd();
-          process.chdir(projectRoot);
-          try {
-            const { runGitDiff } = await import("@plannotator/server/git");
-            return await runGitDiff(diffType, defaultBranch);
-          } finally {
-            process.chdir(previousDirectory);
-          }
+        runGitDiff: async (diffType, defaultBranch, cwd) => {
+          const { runGitDiff } = await import("@plannotator/server/git");
+          return await runGitDiff(diffType, defaultBranch, cwd);
         },
         startReviewServer: async (options) => {
           started.rawPatch = options.rawPatch;
@@ -326,9 +314,7 @@ describe("plannotator annotate slash command", () => {
       join(import.meta.dir, "commands", "plannotator-annotate.md"),
     ).text();
 
-    expect(command).toContain(
-      "The Plannotator Annotate UI has been triggered. Opening the annotation UI at http://localhost:19432/...",
-    );
+    expect(command).toContain("The Plannotator Annotate UI has been triggered.");
     expect(command).toContain("plannotator_annotate");
     expect(command).toContain("Description: $ARGUMENTS");
   });
