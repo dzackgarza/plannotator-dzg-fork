@@ -281,8 +281,10 @@ Do NOT proceed with implementation until your plan is approved.
                   resolve(r);
                 });
               });
-          await Bun.sleep(1500);
-          server.stop();
+          
+          // Server will gracefully shut down via /api/shutdown call from UI
+          // Fallback stop in case UI disconnects without calling it
+          setTimeout(() => server.stop(), 10000);
 
           if (result.approved) {
             // Check agent switch setting (defaults to 'build' if not set)

@@ -251,8 +251,7 @@ export default function plannotator(pi: ExtensionAPI): void {
       openBrowser(server.url);
 
       const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      setTimeout(() => server.stop(), 5000);
 
       if (result.feedback) {
         if (result.approved) {
@@ -298,8 +297,7 @@ export default function plannotator(pi: ExtensionAPI): void {
       openBrowser(server.url);
 
       const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      setTimeout(() => server.stop(), 5000);
 
       if (result.feedback) {
         pi.sendUserMessage(
@@ -400,8 +398,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 
       // Wait for user decision in the browser
       const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      setTimeout(() => server.stop(), 5000);
 
       if (result.approved) {
         phase = "executing";

@@ -290,6 +290,12 @@ export async function startReviewServer(
             }
           }
 
+          // API: Explicitly cancel and shutdown the server
+          if (url.pathname === "/api/shutdown" && req.method === "POST") {
+            setTimeout(() => server?.stop(), 10);
+            return Response.json({ ok: true });
+          }
+
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {
             headers: { "Content-Type": "text/html" },

@@ -527,6 +527,8 @@ const App: React.FC = () => {
         body: JSON.stringify(body),
       });
       setSubmitted('approved');
+      // Gracefully signal the server to stop now that the flow is complete
+      fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
     } catch {
       setIsSubmitting(false);
     }
@@ -548,6 +550,7 @@ const App: React.FC = () => {
         })
       });
       setSubmitted('denied');
+      fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
     } catch {
       setIsSubmitting(false);
     }

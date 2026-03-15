@@ -329,6 +329,9 @@ export function startPlanReviewServer(options: {
       const body = await parseBody(req);
       resolveDecision({ approved: false, feedback: (body.feedback as string) || "Plan rejected" });
       json(res, { ok: true });
+    } else if (url.pathname === "/api/shutdown" && req.method === "POST") {
+      setTimeout(() => server?.close(), 10);
+      json(res, { ok: true });
     } else {
       html(res, options.htmlContent);
     }
@@ -464,6 +467,9 @@ export function startReviewServer(options: {
         feedback: (body.feedback as string) || "",
       });
       json(res, { ok: true });
+    } else if (url.pathname === "/api/shutdown" && req.method === "POST") {
+      setTimeout(() => server?.close(), 10);
+      json(res, { ok: true });
     } else {
       html(res, options.htmlContent);
     }
@@ -512,6 +518,9 @@ export function startAnnotateServer(options: {
     } else if (url.pathname === "/api/feedback" && req.method === "POST") {
       const body = await parseBody(req);
       resolveDecision({ feedback: (body.feedback as string) || "" });
+      json(res, { ok: true });
+    } else if (url.pathname === "/api/shutdown" && req.method === "POST") {
+      setTimeout(() => server?.close(), 10);
       json(res, { ok: true });
     } else {
       html(res, options.htmlContent);

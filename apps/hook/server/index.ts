@@ -176,11 +176,8 @@ if (args[0] === "sessions") {
   // Wait for user feedback
   const result = await server.waitForDecision();
 
-  // Give browser time to receive response and update UI
-  await Bun.sleep(1500);
-
-  // Cleanup
-  server.stop();
+  // Give browser time to send /api/shutdown (graceful) or fallback to timeout
+  setTimeout(() => server.stop(), 5000);
 
   // Output feedback (captured by slash command)
   if (result.approved) {
@@ -266,11 +263,8 @@ if (args[0] === "sessions") {
   // Wait for user feedback
   const result = await server.waitForDecision();
 
-  // Give browser time to receive response and update UI
-  await Bun.sleep(1500);
-
-  // Cleanup
-  server.stop();
+  // Give browser time to send /api/shutdown (graceful) or fallback to timeout
+  setTimeout(() => server.stop(), 5000);
 
   // Output feedback (captured by slash command)
   console.log(result.feedback || "No feedback provided.");
@@ -333,11 +327,8 @@ if (args[0] === "sessions") {
   // Wait for user decision (blocks until approve/deny)
   const result = await server.waitForDecision();
 
-  // Give browser time to receive response and update UI
-  await Bun.sleep(1500);
-
-  // Cleanup
-  server.stop();
+  // Give browser time to send /api/shutdown (graceful) or fallback to timeout
+  setTimeout(() => server.stop(), 5000);
 
   // Output JSON for PermissionRequest hook decision control
   if (result.approved) {
