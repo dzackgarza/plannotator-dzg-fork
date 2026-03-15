@@ -176,12 +176,6 @@ if (args[0] === "sessions") {
   // Wait for user feedback
   const result = await server.waitForDecision();
 
-  // Give browser time to receive response and update UI
-  await Bun.sleep(1500);
-
-  // Cleanup
-  server.stop();
-
   // Output feedback (captured by slash command)
   if (result.approved) {
     console.log("Code review completed — no changes requested.");
@@ -189,7 +183,12 @@ if (args[0] === "sessions") {
     console.log(result.feedback);
     console.log("\nThe reviewer has identified issues above. You must address all of them.");
   }
-  process.exit(0);
+
+  // Stop the server after flushing the approve/deny response to the browser.
+  // Calling process.exit() immediately would race with that in-flight response.
+  // Instead, let the event loop drain (the server's /api/shutdown handler fires
+  // when the UI confirms receipt), with a fallback timeout to ensure we exit.
+  setTimeout(() => { server.stop(); process.exit(0); }, 5000);
 
 } else if (args[0] === "annotate") {
   // ============================================
@@ -266,15 +265,11 @@ if (args[0] === "sessions") {
   // Wait for user feedback
   const result = await server.waitForDecision();
 
-  // Give browser time to receive response and update UI
-  await Bun.sleep(1500);
-
-  // Cleanup
-  server.stop();
-
   // Output feedback (captured by slash command)
   console.log(result.feedback || "No feedback provided.");
-  process.exit(0);
+
+  // Stop the server after flushing the response to the browser.
+  setTimeout(() => { server.stop(); process.exit(0); }, 5000);
 
 } else {
   // ============================================
@@ -286,10 +281,12 @@ if (args[0] === "sessions") {
 
   let planContent = "";
   let permissionMode = "default";
+  let commitMessage = undefined;
   try {
     const event = JSON.parse(eventJson);
     planContent = event.tool_input?.plan || "";
     permissionMode = event.permission_mode || "default";
+    commitMessage = event.tool_input?.commit_message || undefined;
   } catch {
     console.error("Failed to parse hook event from stdin");
     process.exit(1);
@@ -310,6 +307,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
+    commitMessage,
     htmlContent: planHtmlContent,
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
@@ -332,12 +330,6 @@ if (args[0] === "sessions") {
 
   // Wait for user decision (blocks until approve/deny)
   const result = await server.waitForDecision();
-
-  // Give browser time to receive response and update UI
-  await Bun.sleep(1500);
-
-  // Cleanup
-  server.stop();
 
   // Output JSON for PermissionRequest hook decision control
   if (result.approved) {
@@ -376,5 +368,7 @@ if (args[0] === "sessions") {
     );
   }
 
-  process.exit(0);
+  // Stop the server after flushing the approve/deny response to the browser.
+  // Calling process.exit() immediately would race with that in-flight response.
+  setTimeout(() => { server.stop(); process.exit(0); }, 5000);
 }

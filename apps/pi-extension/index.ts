@@ -251,8 +251,7 @@ export default function plannotator(pi: ExtensionAPI): void {
       openBrowser(server.url);
 
       const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      setTimeout(() => server.stop(), 5000);
 
       if (result.feedback) {
         if (result.approved) {
@@ -298,8 +297,7 @@ export default function plannotator(pi: ExtensionAPI): void {
       openBrowser(server.url);
 
       const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      setTimeout(() => server.stop(), 5000);
 
       if (result.feedback) {
         pi.sendUserMessage(
@@ -330,6 +328,7 @@ export default function plannotator(pi: ExtensionAPI): void {
       summary: Type.Optional(
         Type.String({ description: "Brief summary of the plan for the user's review" }),
       ),
+      commit_message: Type.String({ description: "A commit message summarizing what has changed since the previous version of this plan. If this is a revision of a previously rejected plan, explain what feedback was addressed." }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -394,14 +393,14 @@ export default function plannotator(pi: ExtensionAPI): void {
         plan: planContent,
         htmlContent: planHtmlContent,
         origin: "pi",
+        commitMessage: params.commit_message,
       });
 
       openBrowser(server.url);
 
       // Wait for user decision in the browser
       const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      setTimeout(() => server.stop(), 5000);
 
       if (result.approved) {
         phase = "executing";

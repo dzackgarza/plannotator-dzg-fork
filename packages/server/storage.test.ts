@@ -87,80 +87,79 @@ describe("savePlan", () => {
 });
 
 describe("saveToHistory", () => {
-  test("creates first version as 001.md", () => {
+  test("creates first version and commits it", async () => {
     const slug = `first-version-${Date.now()}`;
-    const result = saveToHistory("test-project", slug, "# V1");
+    const result = await saveToHistory("test-project", slug, "# V1");
     expect(result.version).toBe(1);
-    expect(result.path).toEndWith("001.md");
+    expect(result.path).toEndWith(".md");
     expect(result.isNew).toBe(true);
     expect(readFileSync(result.path, "utf-8")).toBe("# V1");
   });
 
-  test("increments version number", () => {
+  test("increments version number", async () => {
     const slug = `inc-test-${Date.now()}`;
-    const v1 = saveToHistory("test-project", slug, "# V1");
-    const v2 = saveToHistory("test-project", slug, "# V2");
+    const v1 = await saveToHistory("test-project", slug, "# V1");
+    const v2 = await saveToHistory("test-project", slug, "# V2");
     expect(v1.version).toBe(1);
     expect(v2.version).toBe(2);
-    expect(v2.path).toEndWith("002.md");
   });
 
-  test("deduplicates identical content", () => {
+  test("deduplicates identical content", async () => {
     const slug = `dedup-test-${Date.now()}`;
-    const v1 = saveToHistory("test-project", slug, "# Same");
-    const v2 = saveToHistory("test-project", slug, "# Same");
+    const v1 = await saveToHistory("test-project", slug, "# Same");
+    const v2 = await saveToHistory("test-project", slug, "# Same");
     expect(v1.version).toBe(1);
     expect(v2.version).toBe(1);
     expect(v2.isNew).toBe(false);
   });
 
-  test("saves when content differs", () => {
+  test("saves when content differs", async () => {
     const slug = `diff-test-${Date.now()}`;
-    const v1 = saveToHistory("test-project", slug, "# V1");
-    const v2 = saveToHistory("test-project", slug, "# V2");
+    const v1 = await saveToHistory("test-project", slug, "# V1");
+    const v2 = await saveToHistory("test-project", slug, "# V2");
     expect(v2.isNew).toBe(true);
     expect(v2.version).toBe(2);
   });
 });
 
 describe("getPlanVersion", () => {
-  test("reads saved version content", () => {
+  test("reads saved version content", async () => {
     const slug = `read-test-${Date.now()}`;
-    saveToHistory("test-project", slug, "# Read Me");
-    const content = getPlanVersion("test-project", slug, 1);
+    await saveToHistory("test-project", slug, "# Read Me");
+    const content = await getPlanVersion("test-project", slug, 1);
     expect(content).toBe("# Read Me");
   });
 
-  test("returns null for nonexistent version", () => {
-    const content = getPlanVersion("test-project", "nonexistent", 99);
+  test("returns null for nonexistent version", async () => {
+    const content = await getPlanVersion("test-project", "nonexistent", 99);
     expect(content).toBeNull();
   });
 });
 
 describe("getVersionCount", () => {
-  test("returns 0 for nonexistent project", () => {
-    expect(getVersionCount("nope", "nope")).toBe(0);
+  test("returns 0 for nonexistent project", async () => {
+    expect(await getVersionCount("nope", "nope")).toBe(0);
   });
 
-  test("counts versions correctly", () => {
+  test("counts versions correctly", async () => {
     const slug = `count-test-${Date.now()}`;
-    saveToHistory("test-project", slug, "# V1");
-    saveToHistory("test-project", slug, "# V2");
-    saveToHistory("test-project", slug, "# V3");
-    expect(getVersionCount("test-project", slug)).toBe(3);
+    await saveToHistory("test-project", slug, "# V1");
+    await saveToHistory("test-project", slug, "# V2");
+    await saveToHistory("test-project", slug, "# V3");
+    expect(await getVersionCount("test-project", slug)).toBe(3);
   });
 });
 
 describe("listVersions", () => {
-  test("returns empty for nonexistent project", () => {
-    expect(listVersions("nope", "nope")).toEqual([]);
+  test("returns empty for nonexistent project", async () => {
+    expect(await listVersions("nope", "nope")).toEqual([]);
   });
 
-  test("lists versions in ascending order", () => {
+  test("lists versions in ascending order", async () => {
     const slug = `list-test-${Date.now()}`;
-    saveToHistory("test-project", slug, "# V1");
-    saveToHistory("test-project", slug, "# V2");
-    const versions = listVersions("test-project", slug);
+    await saveToHistory("test-project", slug, "# V1");
+    await saveToHistory("test-project", slug, "# V2");
+    const versions = await listVersions("test-project", slug);
     expect(versions).toHaveLength(2);
     expect(versions[0].version).toBe(1);
     expect(versions[1].version).toBe(2);

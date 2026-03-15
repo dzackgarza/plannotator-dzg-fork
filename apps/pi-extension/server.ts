@@ -7,9 +7,9 @@
  */
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { execSync, spawn } from "node:child_process";
+import { execSync, execFileSync, spawn } from "node:child_process";
 import os from "node:os";
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -134,49 +134,51 @@ function detectProjectName(): string {
   }
 }
 
-function getHistoryDir(project: string, slug: string): string {
-  const historyDir = join(os.homedir(), ".plannotator", "history", project, slug);
+function getHistoryDir(project: string): string {
+  const historyDir = join(os.homedir(), ".plannotator", "plans", project);
   mkdirSync(historyDir, { recursive: true });
-  return historyDir;
-}
 
-function getNextVersionNumber(historyDir: string): number {
-  try {
-    const entries = readdirSync(historyDir);
-    let max = 0;
-    for (const entry of entries) {
-      const match = entry.match(/^(\d+)\.md$/);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (num > max) max = num;
-      }
+  if (!existsSync(join(historyDir, ".git"))) {
+    try {
+      execFileSync("git", ["init"], { cwd: historyDir, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Plannotator"], { cwd: historyDir, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "bot@plannotator.ai"], { cwd: historyDir, stdio: "ignore" });
+    } catch (err) {
+      console.error("[Plannotator] Failed to initialize git history repo:", err);
     }
-    return max + 1;
-  } catch {
-    return 1;
   }
+
+  return historyDir;
 }
 
 function saveToHistory(
   project: string,
   slug: string,
   plan: string,
+  commitMessage?: string,
 ): { version: number; path: string; isNew: boolean } {
-  const historyDir = getHistoryDir(project, slug);
-  const nextVersion = getNextVersionNumber(historyDir);
-  if (nextVersion > 1) {
-    const latestPath = join(historyDir, `${String(nextVersion - 1).padStart(3, "0")}.md`);
-    try {
-      const existing = readFileSync(latestPath, "utf-8");
-      if (existing === plan) {
-        return { version: nextVersion - 1, path: latestPath, isNew: false };
-      }
-    } catch { /* proceed with saving */ }
-  }
-  const fileName = `${String(nextVersion).padStart(3, "0")}.md`;
+  const historyDir = getHistoryDir(project);
+  const fileName = `${slug}.md`;
   const filePath = join(historyDir, fileName);
+
+  const prevCount = getVersionCount(project, slug);
+
   writeFileSync(filePath, plan, "utf-8");
-  return { version: nextVersion, path: filePath, isNew: true };
+
+  try {
+    const status = execFileSync("git", ["status", "--porcelain", fileName], { cwd: historyDir, encoding: "utf-8" });
+    if (!status.trim()) {
+      return { version: prevCount || 1, path: filePath, isNew: false };
+    }
+
+    execFileSync("git", ["add", fileName], { cwd: historyDir, stdio: "ignore" });
+    const msg = commitMessage || `Update plan ${slug} to version ${prevCount + 1}`;
+    execFileSync("git", ["commit", "-m", msg], { cwd: historyDir, stdio: "ignore" });
+  } catch (err) {
+    console.error("[Plannotator] git commit failed:", err);
+  }
+
+  return { version: getVersionCount(project, slug), path: filePath, isNew: true };
 }
 
 function getPlanVersion(
@@ -184,21 +186,33 @@ function getPlanVersion(
   slug: string,
   version: number,
 ): string | null {
-  const historyDir = join(os.homedir(), ".plannotator", "history", project, slug);
-  const fileName = `${String(version).padStart(3, "0")}.md`;
-  const filePath = join(historyDir, fileName);
+  const historyDir = join(os.homedir(), ".plannotator", "plans", project);
+  const fileName = `${slug}.md`;
+
+  if (!existsSync(join(historyDir, ".git"))) return null;
+
   try {
-    return readFileSync(filePath, "utf-8");
+    const commitsStr = execFileSync("git", ["log", "--reverse", "--format=%H", "--", fileName], { cwd: historyDir, encoding: "utf-8" });
+    const commits = commitsStr.trim().split("\n").filter(Boolean);
+
+    if (version < 1 || version > commits.length) return null;
+
+    const targetCommit = commits[version - 1];
+    return execFileSync("git", ["show", `${targetCommit}:${fileName}`], { cwd: historyDir, encoding: "utf-8" });
   } catch {
     return null;
   }
 }
 
 function getVersionCount(project: string, slug: string): number {
-  const historyDir = join(os.homedir(), ".plannotator", "history", project, slug);
+  const historyDir = join(os.homedir(), ".plannotator", "plans", project);
+  const fileName = `${slug}.md`;
+
+  if (!existsSync(join(historyDir, ".git"))) return 0;
+
   try {
-    const entries = readdirSync(historyDir);
-    return entries.filter((e) => /^\d+\.md$/.test(e)).length;
+    const res = execFileSync("git", ["rev-list", "--count", "HEAD", "--", fileName], { cwd: historyDir, encoding: "utf-8" });
+    return parseInt(res.trim(), 10) || 0;
   } catch {
     return 0;
   }
@@ -208,24 +222,18 @@ function listVersions(
   project: string,
   slug: string,
 ): Array<{ version: number; timestamp: string }> {
-  const historyDir = join(os.homedir(), ".plannotator", "history", project, slug);
+  const historyDir = join(os.homedir(), ".plannotator", "plans", project);
+  const fileName = `${slug}.md`;
+
+  if (!existsSync(join(historyDir, ".git"))) return [];
+
   try {
-    const entries = readdirSync(historyDir);
-    const versions: Array<{ version: number; timestamp: string }> = [];
-    for (const entry of entries) {
-      const match = entry.match(/^(\d+)\.md$/);
-      if (match) {
-        const version = parseInt(match[1], 10);
-        const filePath = join(historyDir, entry);
-        try {
-          const stat = statSync(filePath);
-          versions.push({ version, timestamp: stat.mtime.toISOString() });
-        } catch {
-          versions.push({ version, timestamp: "" });
-        }
-      }
-    }
-    return versions.sort((a, b) => a.version - b.version);
+    const res = execFileSync("git", ["log", "--reverse", "--format=%ad", "--date=iso", "--", fileName], { cwd: historyDir, encoding: "utf-8" });
+    const dates = res.trim().split("\n").filter(Boolean);
+    return dates.map((dateStr, idx) => ({
+      version: idx + 1,
+      timestamp: new Date(dateStr).toISOString(),
+    }));
   } catch {
     return [];
   }
@@ -234,27 +242,28 @@ function listVersions(
 function listProjectPlans(
   project: string,
 ): Array<{ slug: string; versions: number; lastModified: string }> {
-  const projectDir = join(os.homedir(), ".plannotator", "history", project);
+  const projectDir = join(os.homedir(), ".plannotator", "plans", project);
+
+  if (!existsSync(projectDir)) return [];
+
   try {
     const entries = readdirSync(projectDir, { withFileTypes: true });
     const plans: Array<{ slug: string; versions: number; lastModified: string }> = [];
+
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const slugDir = join(projectDir, entry.name);
-      const files = readdirSync(slugDir).filter((f) => /^\d+\.md$/.test(f));
-      if (files.length === 0) continue;
-      let latest = 0;
-      for (const file of files) {
-        try {
-          const mtime = statSync(join(slugDir, file)).mtime.getTime();
-          if (mtime > latest) latest = mtime;
-        } catch { /* skip */ }
-      }
-      plans.push({
-        slug: entry.name,
-        versions: files.length,
-        lastModified: latest ? new Date(latest).toISOString() : "",
-      });
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+
+      const slug = entry.name.slice(0, -3);
+      const versions = getVersionCount(project, slug);
+      if (versions === 0) continue;
+
+      let lastModified = "";
+      try {
+        const mtime = statSync(join(projectDir, entry.name)).mtime;
+        lastModified = mtime.toISOString();
+      } catch { /* skip */ }
+
+      plans.push({ slug, versions, lastModified });
     }
     return plans.sort((a, b) => b.lastModified.localeCompare(a.lastModified));
   } catch {
@@ -275,11 +284,12 @@ export function startPlanReviewServer(options: {
   plan: string;
   htmlContent: string;
   origin?: string;
+  commitMessage?: string;
 }): PlanServerResult {
   // Version history
   const slug = generateSlug(options.plan);
   const project = detectProjectName();
-  const historyResult = saveToHistory(project, slug, options.plan);
+  const historyResult = saveToHistory(project, slug, options.plan, options.commitMessage);
   const previousPlan =
     historyResult.version > 1
       ? getPlanVersion(project, slug, historyResult.version - 1)
@@ -290,7 +300,7 @@ export function startPlanReviewServer(options: {
     project,
   };
 
-  let resolveDecision!: (result: { approved: boolean; feedback?: string }) => void;
+  let resolveDecision!: (result: { approved: boolean; cancelled?: boolean; feedback?: string }) => void;
   const decisionPromise = new Promise<{ approved: boolean; feedback?: string }>((r) => {
     resolveDecision = r;
   });
@@ -323,11 +333,39 @@ export function startPlanReviewServer(options: {
       json(res, { plan: options.plan, origin: options.origin ?? "pi", previousPlan, versionInfo });
     } else if (url.pathname === "/api/approve" && req.method === "POST") {
       const body = await parseBody(req);
-      resolveDecision({ approved: true, feedback: body.feedback as string | undefined });
+      const feedback = body.feedback as string | undefined;
+
+      if (feedback) {
+        try {
+          const historyDir = getHistoryDir(project);
+          const msg = `Approve plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
+          execFileSync("git", ["commit", "--allow-empty", "-m", msg], { cwd: historyDir, stdio: "ignore" });
+        } catch { /* ignore */ }
+      }
+
+      resolveDecision({ approved: true, feedback });
       json(res, { ok: true });
     } else if (url.pathname === "/api/deny" && req.method === "POST") {
       const body = await parseBody(req);
-      resolveDecision({ approved: false, feedback: (body.feedback as string) || "Plan rejected" });
+      const feedback = (body.feedback as string) || "Plan rejected";
+
+      try {
+        const historyDir = getHistoryDir(project);
+        const msg = `Reject plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
+        execFileSync("git", ["commit", "--allow-empty", "-m", msg], { cwd: historyDir, stdio: "ignore" });
+      } catch { /* ignore */ }
+
+      resolveDecision({ approved: false, feedback });
+      json(res, { ok: true });
+    } else if (url.pathname === "/api/cancel" && req.method === "POST") {
+      resolveDecision({ approved: false, cancelled: true, feedback: "" });
+      json(res, { ok: true });
+      setTimeout(() => server?.close(), 10);
+    } else if (url.pathname === "/api/reset" && req.method === "POST") {
+      // No draft state to clear in pi-extension
+      json(res, { ok: true });
+    } else if (url.pathname === "/api/shutdown" && req.method === "POST") {
+      setTimeout(() => server?.close(), 10);
       json(res, { ok: true });
     } else {
       html(res, options.htmlContent);
@@ -464,6 +502,9 @@ export function startReviewServer(options: {
         feedback: (body.feedback as string) || "",
       });
       json(res, { ok: true });
+    } else if (url.pathname === "/api/shutdown" && req.method === "POST") {
+      setTimeout(() => server?.close(), 10);
+      json(res, { ok: true });
     } else {
       html(res, options.htmlContent);
     }
@@ -512,6 +553,9 @@ export function startAnnotateServer(options: {
     } else if (url.pathname === "/api/feedback" && req.method === "POST") {
       const body = await parseBody(req);
       resolveDecision({ feedback: (body.feedback as string) || "" });
+      json(res, { ok: true });
+    } else if (url.pathname === "/api/shutdown" && req.method === "POST") {
+      setTimeout(() => server?.close(), 10);
       json(res, { ok: true });
     } else {
       html(res, options.htmlContent);

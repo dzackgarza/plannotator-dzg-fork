@@ -64,6 +64,7 @@ export interface ReviewServerResult {
     feedback: string;
     annotations: unknown[];
     agentSwitch?: string;
+    cancelled?: boolean;
   }>;
   /** Stop the server */
   stop: () => void;
@@ -108,18 +109,40 @@ export async function startReviewServer(
     feedback: string;
     annotations: unknown[];
     agentSwitch?: string;
+    cancelled?: boolean;
   }) => void;
   const decisionPromise = new Promise<{
     approved: boolean;
     feedback: string;
     annotations: unknown[];
     agentSwitch?: string;
+    cancelled?: boolean;
   }>((resolve) => {
     resolveDecision = resolve;
   });
 
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
+
+  // Handle CLI signals for graceful cancellation
+  const handleSignal = () => {
+    deleteDraft(draftKey);
+    resolveDecision({
+      approved: false,
+      feedback: "Review cancelled by user via CLI signal.",
+      annotations: [],
+      cancelled: true,
+    });
+  };
+
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
+
+  const cleanup = () => {
+    process.off("SIGINT", handleSignal);
+    process.off("SIGTERM", handleSignal);
+    server?.stop();
+  };
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -290,6 +313,30 @@ export async function startReviewServer(
             }
           }
 
+          // API: Cancel review
+          if (url.pathname === "/api/cancel" && req.method === "POST") {
+            deleteDraft(draftKey);
+            resolveDecision({
+              approved: false,
+              feedback: "Review cancelled by user.",
+              annotations: [],
+              cancelled: true,
+            });
+            return Response.json({ ok: true });
+          }
+
+          // API: Reset annotations
+          if (url.pathname === "/api/reset" && req.method === "POST") {
+            deleteDraft(draftKey);
+            return Response.json({ ok: true });
+          }
+
+          // API: Explicitly cancel and shutdown the server
+          if (url.pathname === "/api/shutdown" && req.method === "POST") {
+            setTimeout(cleanup, 10);
+            return Response.json({ ok: true });
+          }
+
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {
             headers: { "Content-Type": "text/html" },
@@ -332,6 +379,6 @@ export async function startReviewServer(
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
-    stop: () => server.stop(),
+    stop: cleanup,
   };
 }

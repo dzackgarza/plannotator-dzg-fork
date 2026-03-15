@@ -152,35 +152,51 @@ async function forwardReviewFeedbackInBackground(
   server: ReviewServerResult,
   client: SessionPromptClient,
   sessionID: string,
-  sleep: (ms: number) => Promise<void>,
-): Promise<void> {
-  try {
-    const result = await server.waitForDecision();
-    if (!result.feedback) {
-      return;
-    }
+): Promise<() => void> {
+  // Save stop callback to return immediately
+  const stopServer = () => server.stop();
 
-    const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== "disabled";
-    const targetAgent = result.agentSwitch || "build";
-
-    await client.session.prompt({
-      path: { id: sessionID },
-      body: {
-        ...(shouldSwitchAgent && { agent: targetAgent }),
-        parts: [
-          {
-            type: "text",
-            text: buildReviewFeedbackMessage(result.approved, result.feedback),
+  (async () => {
+    try {
+      const result = await server.waitForDecision();
+      if (result.cancelled) {
+        await client.session.prompt({
+          path: { id: sessionID },
+          body: {
+            parts: [{ type: "text", text: "Code review cancelled by user." }],
           },
-        ],
-      },
-    });
-  } catch {
-    // Session may not be available once the review completes.
-  } finally {
-    await sleep(1500);
-    server.stop();
-  }
+        });
+        return;
+      }
+      if (!result.feedback) {
+        return;
+      }
+
+      const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== "disabled";
+      const targetAgent = result.agentSwitch || "build";
+
+      await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          ...(shouldSwitchAgent && { agent: targetAgent }),
+          parts: [
+            {
+              type: "text",
+              text: buildReviewFeedbackMessage(result.approved, result.feedback),
+            },
+          ],
+        },
+      });
+    } catch {
+      // Session may not be available once the review completes.
+    } finally {
+      // Graceful shutdown happens via /api/shutdown from the UI
+      // This is a fallback to ensure the server eventually stops
+      setTimeout(() => server.stop(), 10000);
+    }
+  })();
+
+  return stopServer;
 }
 
 async function forwardAnnotateFeedbackInBackground(
@@ -188,31 +204,46 @@ async function forwardAnnotateFeedbackInBackground(
   client: SessionPromptClient,
   sessionID: string,
   filePath: string,
-  sleep: (ms: number) => Promise<void>,
-): Promise<void> {
-  try {
-    const result = await server.waitForDecision();
-    if (!result.feedback) {
-      return;
-    }
+): Promise<() => void> {
+  const stopServer = () => server.stop();
 
-    await client.session.prompt({
-      path: { id: sessionID },
-      body: {
-        parts: [
-          {
-            type: "text",
-            text: buildAnnotateFeedbackMessage(filePath, result.feedback),
+  (async () => {
+    try {
+      const result = await server.waitForDecision();
+      if (result.cancelled) {
+        await client.session.prompt({
+          path: { id: sessionID },
+          body: {
+            parts: [{ type: "text", text: `Annotation of ${filePath} cancelled by user.` }],
           },
-        ],
-      },
-    });
-  } catch {
-    // Session may not be available once annotation completes.
-  } finally {
-    await sleep(1500);
-    server.stop();
-  }
+        });
+        return;
+      }
+      if (!result.feedback) {
+        return;
+      }
+
+      await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          parts: [
+            {
+              type: "text",
+              text: buildAnnotateFeedbackMessage(filePath, result.feedback),
+            },
+          ],
+        },
+      });
+    } catch {
+      // Session may not be available once annotation completes.
+    } finally {
+      // Graceful shutdown happens via /api/shutdown from the UI
+      // This is a fallback to ensure the server eventually stops
+      setTimeout(() => server.stop(), 10000);
+    }
+  })();
+
+  return stopServer;
 }
 
 export async function runPlannotatorReviewTool(
@@ -245,7 +276,6 @@ export async function runPlannotatorReviewTool(
     server,
     env.client,
     context.sessionID,
-    deps.sleep,
   );
 
   return buildReviewToolResponse(server.url, diffType);
@@ -278,7 +308,6 @@ export async function runPlannotatorAnnotateTool(
     env.client,
     context.sessionID,
     resolved.path,
-    deps.sleep,
   );
 
   return buildAnnotateToolResponse(server.url, resolved.path);
