@@ -9,6 +9,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync } from "fs";
 import { sanitizeTag } from "./project";
+import { $ } from "bun";
 
 /**
  * Get the plan storage directory, creating it if needed.
@@ -100,87 +101,85 @@ export function saveFinalSnapshot(
   return filePath;
 }
 
-// --- Version History ---
+// --- Version History (Git-based) ---
 
 /**
- * Get the history directory for a project/slug combination, creating it if needed.
- * History is always stored in ~/.plannotator/history/{project}/{slug}/.
- * Not affected by the customPath setting (that only affects decision saves).
+ * Get the history directory for a project, creating it and initializing git if needed.
+ * History is always stored in ~/.plannotator/plans/{project}/.
  */
-export function getHistoryDir(project: string, slug: string): string {
-  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
+export async function getHistoryDir(project: string): Promise<string> {
+  const historyDir = join(homedir(), ".plannotator", "plans", project);
   mkdirSync(historyDir, { recursive: true });
+
+  if (!existsSync(join(historyDir, ".git"))) {
+    await $`git init`.cwd(historyDir).quiet();
+    await $`git config user.name "Plannotator"`.cwd(historyDir).quiet();
+    await $`git config user.email "bot@plannotator.ai"`.cwd(historyDir).quiet();
+  }
+
   return historyDir;
 }
 
 /**
- * Determine the next version number by scanning existing files.
- * Returns 1 if no versions exist, otherwise max + 1.
- */
-function getNextVersionNumber(historyDir: string): number {
-  try {
-    const entries = readdirSync(historyDir);
-    let max = 0;
-    for (const entry of entries) {
-      const match = entry.match(/^(\d+)\.md$/);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (num > max) max = num;
-      }
-    }
-    return max + 1;
-  } catch {
-    return 1;
-  }
-}
-
-/**
- * Save a plan version to the history directory.
- * Deduplication: if the latest version has identical content, skip saving.
+ * Save a plan version to the history directory using git.
  * Returns the version number, file path, and whether a new file was created.
  */
-export function saveToHistory(
+export async function saveToHistory(
   project: string,
   slug: string,
-  plan: string
-): { version: number; path: string; isNew: boolean } {
-  const historyDir = getHistoryDir(project, slug);
-  const nextVersion = getNextVersionNumber(historyDir);
+  plan: string,
+  commitMessage?: string
+): Promise<{ version: number; path: string; isNew: boolean }> {
+  const historyDir = await getHistoryDir(project);
+  const fileName = `${slug}.md`;
+  const filePath = join(historyDir, fileName);
 
-  // Deduplicate: check if latest version has identical content
-  if (nextVersion > 1) {
-    const latestPath = join(historyDir, `${String(nextVersion - 1).padStart(3, "0")}.md`);
-    try {
-      const existing = readFileSync(latestPath, "utf-8");
-      if (existing === plan) {
-        return { version: nextVersion - 1, path: latestPath, isNew: false };
-      }
-    } catch {
-      // File read failed, proceed with saving
-    }
+  const prevCount = await getVersionCount(project, slug);
+
+  // Write content
+  writeFileSync(filePath, plan, "utf-8");
+
+  // Check if anything changed
+  const status = await $`git status --porcelain ${fileName}`.cwd(historyDir).quiet();
+  if (!status.text().trim()) {
+    // No changes
+    return { version: prevCount || 1, path: filePath, isNew: false };
   }
 
-  const fileName = `${String(nextVersion).padStart(3, "0")}.md`;
-  const filePath = join(historyDir, fileName);
-  writeFileSync(filePath, plan, "utf-8");
-  return { version: nextVersion, path: filePath, isNew: true };
+  // Add and commit
+  await $`git add ${fileName}`.cwd(historyDir).quiet();
+  
+  const msg = commitMessage || `Update plan ${slug} to version ${prevCount + 1}`;
+  await $`git commit -m ${msg}`.cwd(historyDir).quiet().nothrow();
+
+  const newCount = await getVersionCount(project, slug);
+  return { version: newCount, path: filePath, isNew: true };
 }
 
 /**
  * Read a specific version's content from history.
  * Returns null if the version doesn't exist or on read error.
  */
-export function getPlanVersion(
+export async function getPlanVersion(
   project: string,
   slug: string,
   version: number
-): string | null {
-  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
-  const fileName = `${String(version).padStart(3, "0")}.md`;
-  const filePath = join(historyDir, fileName);
+): Promise<string | null> {
+  const historyDir = join(homedir(), ".plannotator", "plans", project);
+  const fileName = `${slug}.md`;
+  
+  if (!existsSync(join(historyDir, ".git"))) return null;
 
   try {
-    return readFileSync(filePath, "utf-8");
+    // Get commit hash for the specific version (1-indexed chronological order)
+    const commitsStr = await $`git log --reverse --format=%H -- ${fileName}`.cwd(historyDir).quiet();
+    const commits = commitsStr.text().trim().split("\n").filter(Boolean);
+    
+    if (version < 1 || version > commits.length) return null;
+    
+    const targetCommit = commits[version - 1];
+    const content = await $`git show ${targetCommit}:${fileName}`.cwd(historyDir).quiet();
+    return content.text();
   } catch {
     return null;
   }
@@ -188,28 +187,39 @@ export function getPlanVersion(
 
 /**
  * Get the file path for a specific version in history.
+ * Since this is a git revision, we write it to a temp file and return its path.
  * Returns null if the version file doesn't exist.
  */
-export function getPlanVersionPath(
+export async function getPlanVersionPath(
   project: string,
   slug: string,
   version: number
-): string | null {
-  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
-  const fileName = `${String(version).padStart(3, "0")}.md`;
-  const filePath = join(historyDir, fileName);
-  return existsSync(filePath) ? filePath : null;
+): Promise<string | null> {
+  const content = await getPlanVersion(project, slug, version);
+  if (content === null) return null;
+
+  const tmpDir = join(homedir(), ".plannotator", "tmp", project, slug);
+  mkdirSync(tmpDir, { recursive: true });
+  
+  const tmpPath = join(tmpDir, `${version}.md`);
+  writeFileSync(tmpPath, content, "utf-8");
+  return tmpPath;
 }
 
 /**
  * Get the number of versions stored for a project/slug.
  * Returns 0 if the directory doesn't exist.
  */
-export function getVersionCount(project: string, slug: string): number {
-  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
+export async function getVersionCount(project: string, slug: string): Promise<number> {
+  const historyDir = join(homedir(), ".plannotator", "plans", project);
+  const fileName = `${slug}.md`;
+
+  if (!existsSync(join(historyDir, ".git"))) return 0;
+
   try {
-    const entries = readdirSync(historyDir);
-    return entries.filter((e) => /^\d+\.md$/.test(e)).length;
+    const res = await $`git rev-list --count HEAD -- ${fileName}`.cwd(historyDir).quiet().nothrow();
+    if (res.exitCode !== 0) return 0;
+    return parseInt(res.text().trim(), 10) || 0;
   } catch {
     return 0;
   }
@@ -219,28 +229,24 @@ export function getVersionCount(project: string, slug: string): number {
  * List all versions for a project/slug with metadata.
  * Returns versions sorted ascending by version number.
  */
-export function listVersions(
+export async function listVersions(
   project: string,
   slug: string
-): Array<{ version: number; timestamp: string }> {
-  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
+): Promise<Array<{ version: number; timestamp: string }>> {
+  const historyDir = join(homedir(), ".plannotator", "plans", project);
+  const fileName = `${slug}.md`;
+
+  if (!existsSync(join(historyDir, ".git"))) return [];
+
   try {
-    const entries = readdirSync(historyDir);
-    const versions: Array<{ version: number; timestamp: string }> = [];
-    for (const entry of entries) {
-      const match = entry.match(/^(\d+)\.md$/);
-      if (match) {
-        const version = parseInt(match[1], 10);
-        const filePath = join(historyDir, entry);
-        try {
-          const stat = statSync(filePath);
-          versions.push({ version, timestamp: stat.mtime.toISOString() });
-        } catch {
-          versions.push({ version, timestamp: "" });
-        }
-      }
-    }
-    return versions.sort((a, b) => a.version - b.version);
+    const res = await $`git log --reverse --format="%ad" --date=iso -- ${fileName}`.cwd(historyDir).quiet().nothrow();
+    if (res.exitCode !== 0) return [];
+    
+    const dates = res.text().trim().split("\n").filter(Boolean);
+    return dates.map((dateStr, idx) => ({
+      version: idx + 1,
+      timestamp: new Date(dateStr).toISOString(),
+    }));
   } catch {
     return [];
   }
@@ -250,32 +256,34 @@ export function listVersions(
  * List all plan slugs stored for a project.
  * Returns slugs sorted by most recently modified first.
  */
-export function listProjectPlans(
+export async function listProjectPlans(
   project: string
-): Array<{ slug: string; versions: number; lastModified: string }> {
-  const projectDir = join(homedir(), ".plannotator", "history", project);
+): Promise<Array<{ slug: string; versions: number; lastModified: string }>> {
+  const projectDir = join(homedir(), ".plannotator", "plans", project);
+  
+  if (!existsSync(projectDir)) return [];
+
   try {
     const entries = readdirSync(projectDir, { withFileTypes: true });
     const plans: Array<{ slug: string; versions: number; lastModified: string }> = [];
+    
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const slugDir = join(projectDir, entry.name);
-      const files = readdirSync(slugDir).filter((f) => /^\d+\.md$/.test(f));
-      if (files.length === 0) continue;
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      
+      const slug = entry.name.slice(0, -3); // remove .md
+      const versions = await getVersionCount(project, slug);
+      if (versions === 0) continue;
 
-      // Find most recent file modification time
-      let latest = 0;
-      for (const file of files) {
-        try {
-          const mtime = statSync(join(slugDir, file)).mtime.getTime();
-          if (mtime > latest) latest = mtime;
-        } catch { /* skip */ }
-      }
+      let lastModified = "";
+      try {
+        const mtime = statSync(join(projectDir, entry.name)).mtime;
+        lastModified = mtime.toISOString();
+      } catch { /* skip */ }
 
       plans.push({
-        slug: entry.name,
-        versions: files.length,
-        lastModified: latest ? new Date(latest).toISOString() : "",
+        slug,
+        versions,
+        lastModified,
       });
     }
     return plans.sort((a, b) => b.lastModified.localeCompare(a.lastModified));

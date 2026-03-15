@@ -280,10 +280,12 @@ if (args[0] === "sessions") {
 
   let planContent = "";
   let permissionMode = "default";
+  let commitMessage = undefined;
   try {
     const event = JSON.parse(eventJson);
     planContent = event.tool_input?.plan || "";
     permissionMode = event.permission_mode || "default";
+    commitMessage = event.tool_input?.commit_message || undefined;
   } catch {
     console.error("Failed to parse hook event from stdin");
     process.exit(1);
@@ -304,6 +306,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
+    commitMessage,
     htmlContent: planHtmlContent,
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);

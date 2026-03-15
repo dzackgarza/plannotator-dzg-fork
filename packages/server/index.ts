@@ -30,6 +30,7 @@ import {
   getVersionCount,
   listVersions,
   listProjectPlans,
+  getHistoryDir,
 } from "./storage";
 import { getRepoInfo } from "./repo";
 import { detectProjectName } from "./project";
@@ -67,6 +68,8 @@ export interface ServerOptions {
   onReady?: (url: string, isRemote: boolean, port: number) => void;
   /** OpenCode client for querying available agents (OpenCode only) */
   opencodeClient?: OpencodeClient;
+  /** Commit message provided by the agent for the plan version */
+  commitMessage?: string;
 }
 
 export interface ServerResult {
@@ -106,7 +109,7 @@ const RETRY_DELAY_MS = 500;
 export async function startPlannotatorServer(
   options: ServerOptions
 ): Promise<ServerResult> {
-  const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady } = options;
+  const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, commitMessage } = options;
 
   const isRemote = isRemoteSession();
   const configuredPort = getServerPort();
@@ -121,15 +124,15 @@ export async function startPlannotatorServer(
 
   // Version history: save plan and detect previous version
   const project = (await detectProjectName()) ?? "_unknown";
-  const historyResult = saveToHistory(project, slug, plan);
+  const historyResult = await saveToHistory(project, slug, plan, commitMessage);
   const currentPlanPath = historyResult.path;
   const previousPlan =
     historyResult.version > 1
-      ? getPlanVersion(project, slug, historyResult.version - 1)
+      ? await getPlanVersion(project, slug, historyResult.version - 1)
       : null;
   const versionInfo = {
     version: historyResult.version,
-    totalVersions: getVersionCount(project, slug),
+    totalVersions: await getVersionCount(project, slug),
     project,
   };
 
@@ -188,7 +191,7 @@ export async function startPlannotatorServer(
             if (isNaN(v) || v < 1) {
               return new Response("Invalid version number", { status: 400 });
             }
-            const content = getPlanVersion(project, slug, v);
+            const content = await getPlanVersion(project, slug, v);
             if (content === null) {
               return Response.json({ error: "Version not found" }, { status: 404 });
             }
@@ -200,7 +203,7 @@ export async function startPlannotatorServer(
             return Response.json({
               project,
               slug,
-              versions: listVersions(project, slug),
+              versions: await listVersions(project, slug),
             });
           }
 
@@ -208,7 +211,7 @@ export async function startPlannotatorServer(
           if (url.pathname === "/api/plan/history") {
             return Response.json({
               project,
-              plans: listProjectPlans(project),
+              plans: await listProjectPlans(project),
             });
           }
 
@@ -241,7 +244,7 @@ export async function startPlannotatorServer(
                 return Response.json({ error: "Missing baseVersion" }, { status: 400 });
               }
 
-              const basePath = getPlanVersionPath(project, slug, body.baseVersion);
+              const basePath = await getPlanVersionPath(project, slug, body.baseVersion);
               if (!basePath) {
                 return Response.json({ error: `Version ${body.baseVersion} not found` }, { status: 404 });
               }
@@ -394,6 +397,17 @@ export async function startPlannotatorServer(
                 saveAnnotations(slug, annotations, planSaveCustomPath);
               }
               savedPath = saveFinalSnapshot(slug, "approved", plan, annotations, planSaveCustomPath);
+              
+              // Add feedback to history if feedback was provided
+              if (feedback) {
+                try {
+                  const historyDir = await getHistoryDir(project);
+                  const msg = `Approve plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
+                  await Bun.$`git commit --allow-empty -m ${msg}`.cwd(historyDir).quiet().nothrow();
+                } catch (e) {
+                  console.error("Failed to commit approval feedback to history", e);
+                }
+              }
             }
 
             // Clean up draft on successful submit
@@ -431,6 +445,15 @@ export async function startPlannotatorServer(
             if (planSaveEnabled) {
               saveAnnotations(slug, feedback, planSaveCustomPath);
               savedPath = saveFinalSnapshot(slug, "denied", plan, feedback, planSaveCustomPath);
+              
+              // Add feedback to history
+              try {
+                const historyDir = await getHistoryDir(project);
+                const msg = `Reject plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
+                await Bun.$`git commit --allow-empty -m ${msg}`.cwd(historyDir).quiet().nothrow();
+              } catch (e) {
+                console.error("Failed to commit rejection feedback to history", e);
+              }
             }
 
             deleteDraft(draftKey);

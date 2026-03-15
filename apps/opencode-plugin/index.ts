@@ -243,6 +243,9 @@ Do NOT proceed with implementation until your plan is approved.
           summary: tool.schema
             .string()
             .describe("A brief 1-2 sentence summary of what the plan accomplishes"),
+          commit_message: tool.schema
+            .string()
+            .describe("A commit message summarizing what has changed since the previous version of this plan. If this is a revision of a previously rejected plan, explain what feedback was addressed."),
         },
 
         async execute(args, context) {
@@ -253,6 +256,7 @@ Do NOT proceed with implementation until your plan is approved.
             shareBaseUrl: getShareBaseUrl(),
             htmlContent,
             opencodeClient: ctx.client,
+            commitMessage: args.commit_message,
             onReady: async (url, isRemote, port) => {
               handleServerReady(url, isRemote, port);
               if (isRemote && await getSharingEnabled()) {
