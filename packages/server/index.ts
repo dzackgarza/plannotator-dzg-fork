@@ -83,6 +83,7 @@ export interface ServerResult {
     savedPath?: string;
     agentSwitch?: string;
     permissionMode?: string;
+    cancelled?: boolean;
   }>;
   /** Stop the server */
   stop: () => void;
@@ -140,6 +141,7 @@ export async function startPlannotatorServer(
     savedPath?: string;
     agentSwitch?: string;
     permissionMode?: string;
+    cancelled?: boolean;
   }) => void;
   const decisionPromise = new Promise<{
     approved: boolean;
@@ -147,9 +149,23 @@ export async function startPlannotatorServer(
     savedPath?: string;
     agentSwitch?: string;
     permissionMode?: string;
+    cancelled?: boolean;
   }>((resolve) => {
     resolveDecision = resolve;
   });
+
+  // Handle CLI signals for graceful cancellation
+  const handleSignal = () => {
+    deleteDraft(draftKey);
+    resolveDecision({
+      approved: false,
+      feedback: "Review cancelled by user via CLI signal.",
+      cancelled: true,
+    });
+  };
+
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
 
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
@@ -422,6 +438,23 @@ export async function startPlannotatorServer(
             return Response.json({ ok: true, savedPath });
           }
 
+          // API: Cancel review
+          if (url.pathname === "/api/cancel" && req.method === "POST") {
+            deleteDraft(draftKey);
+            resolveDecision({
+              approved: false,
+              feedback: "Review cancelled by user.",
+              cancelled: true,
+            });
+            return Response.json({ ok: true });
+          }
+
+          // API: Reset annotations
+          if (url.pathname === "/api/reset" && req.method === "POST") {
+            deleteDraft(draftKey);
+            return Response.json({ ok: true });
+          }
+
           // API: Explicitly cancel and shutdown the server
           if (url.pathname === "/api/shutdown" && req.method === "POST") {
             setTimeout(() => server?.stop(), 10);
@@ -470,6 +503,10 @@ export async function startPlannotatorServer(
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
-    stop: () => server.stop(),
+    stop: () => {
+      process.off("SIGINT", handleSignal);
+      process.off("SIGTERM", handleSignal);
+      server?.stop();
+    },
   };
 }

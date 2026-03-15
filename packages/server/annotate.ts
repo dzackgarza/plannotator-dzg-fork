@@ -53,6 +53,7 @@ export interface AnnotateServerResult {
   waitForDecision: () => Promise<{
     feedback: string;
     annotations: unknown[];
+    cancelled?: boolean;
   }>;
   /** Stop the server */
   stop: () => void;
@@ -95,16 +96,31 @@ export async function startAnnotateServer(
   let resolveDecision: (result: {
     feedback: string;
     annotations: unknown[];
+    cancelled?: boolean;
   }) => void;
   const decisionPromise = new Promise<{
     feedback: string;
     annotations: unknown[];
+    cancelled?: boolean;
   }>((resolve) => {
     resolveDecision = resolve;
   });
 
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
+
+  // Handle CLI signals for graceful cancellation
+  const handleSignal = () => {
+    deleteDraft(draftKey);
+    resolveDecision({
+      feedback: "Review cancelled by user via CLI signal.",
+      annotations: [],
+      cancelled: true,
+    });
+  };
+
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -179,6 +195,23 @@ export async function startAnnotateServer(
             }
           }
 
+          // API: Cancel review
+          if (url.pathname === "/api/cancel" && req.method === "POST") {
+            deleteDraft(draftKey);
+            resolveDecision({
+              feedback: "Review cancelled by user.",
+              annotations: [],
+              cancelled: true,
+            });
+            return Response.json({ ok: true });
+          }
+
+          // API: Reset annotations
+          if (url.pathname === "/api/reset" && req.method === "POST") {
+            deleteDraft(draftKey);
+            return Response.json({ ok: true });
+          }
+
           // API: Explicitly cancel and shutdown the server
           if (url.pathname === "/api/shutdown" && req.method === "POST") {
             setTimeout(() => server?.stop(), 10);
@@ -231,6 +264,10 @@ export async function startAnnotateServer(
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
-    stop: () => server.stop(),
+    stop: () => {
+      process.off("SIGINT", handleSignal);
+      process.off("SIGTERM", handleSignal);
+      server?.stop();
+    },
   };
 }

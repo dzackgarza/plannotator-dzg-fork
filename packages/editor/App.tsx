@@ -79,7 +79,7 @@ const App: React.FC = () => {
   const [imageBaseDir, setImageBaseDir] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState<'approved' | 'denied' | null>(null);
+  const [submitted, setSubmitted] = useState<'approved' | 'denied' | 'cancelled' | null>(null);
   const [pendingPasteImage, setPendingPasteImage] = useState<{ file: File; blobUrl: string; initialName: string } | null>(null);
   const [showPermissionModeSetup, setShowPermissionModeSetup] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
@@ -466,6 +466,30 @@ const App: React.FC = () => {
   };
 
   // API mode handlers
+  const handleCancel = async () => {
+    setIsSubmitting(true);
+    try {
+      await fetch('/api/cancel', {
+        method: 'POST',
+      });
+      setSubmitted('cancelled');
+    } catch {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleReset = async () => {
+    try {
+      await fetch('/api/reset', {
+        method: 'POST',
+      });
+      setAnnotations([]);
+      setGlobalAttachments([]);
+    } catch (err) {
+      console.error('Failed to reset:', err);
+    }
+  };
+
   const handleApprove = async () => {
     setIsSubmitting(true);
     try {
@@ -869,6 +893,36 @@ const App: React.FC = () => {
           <div className="flex items-center gap-1 md:gap-2">
             {isApiMode && !linkedDocHook.isActive && (
               <>
+                <button
+                  onClick={handleCancel}
+                  disabled={isSubmitting}
+                  className={`p-1.5 md:px-2.5 md:py-1 rounded-md text-xs font-medium transition-all ${
+                    isSubmitting
+                      ? 'opacity-50 cursor-not-allowed bg-muted text-muted-foreground'
+                      : 'text-muted-foreground hover:bg-destructive/15 hover:text-destructive border border-transparent hover:border-destructive/30'
+                  }`}
+                  title="Cancel Review"
+                >
+                  <span className="hidden md:inline">Cancel</span>
+                  <svg className="w-4 h-4 md:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+
+                {(annotations.length > 0 || globalAttachments.length > 0) && (
+                  <button
+                    onClick={handleReset}
+                    disabled={isSubmitting}
+                    className="p-1.5 md:px-2.5 md:py-1 rounded-md text-xs font-medium transition-all text-muted-foreground hover:bg-muted border border-transparent"
+                    title="Reset Annotations"
+                  >
+                    <span className="hidden md:inline">Reset</span>
+                    <svg className="w-4 h-4 md:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                )}
+
                 <button
                   onClick={() => {
                     if (annotations.length === 0 && editorAnnotations.length === 0) {
@@ -1345,14 +1399,16 @@ const App: React.FC = () => {
 
         {/* Completion overlay - shown after approve/deny */}
         <CompletionOverlay
-          submitted={submitted}
-          title={submitted === 'approved' ? 'Plan Approved' : annotateMode ? 'Annotations Sent' : 'Feedback Sent'}
+          submitted={submitted === 'cancelled' ? 'denied' : submitted}
+          title={submitted === 'approved' ? 'Plan Approved' : submitted === 'cancelled' ? 'Review Cancelled' : annotateMode ? 'Annotations Sent' : 'Feedback Sent'}
           subtitle={
             submitted === 'approved'
               ? `${agentName} will proceed with the implementation.`
-              : annotateMode
-                ? `${agentName} will address your annotations on the file.`
-                : `${agentName} will revise the plan based on your annotations.`
+              : submitted === 'cancelled'
+                ? `The review was cancelled.`
+                : annotateMode
+                  ? `${agentName} will address your annotations on the file.`
+                  : `${agentName} will revise the plan based on your annotations.`
           }
           agentLabel={agentName}
         />

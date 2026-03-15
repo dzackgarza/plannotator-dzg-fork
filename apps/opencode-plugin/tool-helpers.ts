@@ -159,6 +159,15 @@ async function forwardReviewFeedbackInBackground(
   (async () => {
     try {
       const result = await server.waitForDecision();
+      if (result.cancelled) {
+        await client.session.prompt({
+          path: { id: sessionID },
+          body: {
+            parts: [{ type: "text", text: "Code review cancelled by user." }],
+          },
+        });
+        return;
+      }
       if (!result.feedback) {
         return;
       }
@@ -201,6 +210,15 @@ async function forwardAnnotateFeedbackInBackground(
   (async () => {
     try {
       const result = await server.waitForDecision();
+      if (result.cancelled) {
+        await client.session.prompt({
+          path: { id: sessionID },
+          body: {
+            parts: [{ type: "text", text: `Annotation of ${filePath} cancelled by user.` }],
+          },
+        });
+        return;
+      }
       if (!result.feedback) {
         return;
       }

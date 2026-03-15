@@ -286,6 +286,10 @@ Do NOT proceed with implementation until your plan is approved.
           // Fallback stop in case UI disconnects without calling it
           setTimeout(() => server.stop(), 10000);
 
+          if (result.cancelled) {
+            return `Plan review cancelled by user.`;
+          }
+
           if (result.approved) {
             // Check agent switch setting (defaults to 'build' if not set)
             const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== 'disabled';
