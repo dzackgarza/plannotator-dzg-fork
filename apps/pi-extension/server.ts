@@ -143,7 +143,9 @@ function getHistoryDir(project: string): string {
       execFileSync("git", ["init"], { cwd: historyDir, stdio: "ignore" });
       execFileSync("git", ["config", "user.name", "Plannotator"], { cwd: historyDir, stdio: "ignore" });
       execFileSync("git", ["config", "user.email", "bot@plannotator.ai"], { cwd: historyDir, stdio: "ignore" });
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error("[Plannotator] Failed to initialize git history repo:", err);
+    }
   }
 
   return historyDir;
@@ -172,7 +174,9 @@ function saveToHistory(
     execFileSync("git", ["add", fileName], { cwd: historyDir, stdio: "ignore" });
     const msg = commitMessage || `Update plan ${slug} to version ${prevCount + 1}`;
     execFileSync("git", ["commit", "-m", msg], { cwd: historyDir, stdio: "ignore" });
-  } catch { /* ignore git errors */ }
+  } catch (err) {
+    console.error("[Plannotator] git commit failed:", err);
+  }
 
   return { version: getVersionCount(project, slug), path: filePath, isNew: true };
 }
@@ -296,7 +300,7 @@ export function startPlanReviewServer(options: {
     project,
   };
 
-  let resolveDecision!: (result: { approved: boolean; feedback?: string }) => void;
+  let resolveDecision!: (result: { approved: boolean; cancelled?: boolean; feedback?: string }) => void;
   const decisionPromise = new Promise<{ approved: boolean; feedback?: string }>((r) => {
     resolveDecision = r;
   });
@@ -352,6 +356,13 @@ export function startPlanReviewServer(options: {
       } catch { /* ignore */ }
 
       resolveDecision({ approved: false, feedback });
+      json(res, { ok: true });
+    } else if (url.pathname === "/api/cancel" && req.method === "POST") {
+      resolveDecision({ approved: false, cancelled: true, feedback: "" });
+      json(res, { ok: true });
+      setTimeout(() => server?.close(), 10);
+    } else if (url.pathname === "/api/reset" && req.method === "POST") {
+      // No draft state to clear in pi-extension
       json(res, { ok: true });
     } else if (url.pathname === "/api/shutdown" && req.method === "POST") {
       setTimeout(() => server?.close(), 10);

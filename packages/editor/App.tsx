@@ -469,10 +469,13 @@ const App: React.FC = () => {
   const handleCancel = async () => {
     setIsSubmitting(true);
     try {
-      await fetch('/api/cancel', {
-        method: 'POST',
-      });
+      const res = await fetch('/api/cancel', { method: 'POST' });
+      if (!res.ok) {
+        setIsSubmitting(false);
+        return;
+      }
       setSubmitted('cancelled');
+      fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
     } catch {
       setIsSubmitting(false);
     }

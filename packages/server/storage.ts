@@ -112,9 +112,13 @@ export async function getHistoryDir(project: string): Promise<string> {
   mkdirSync(historyDir, { recursive: true });
 
   if (!existsSync(join(historyDir, ".git"))) {
-    await $`git init`.cwd(historyDir).quiet();
-    await $`git config user.name "Plannotator"`.cwd(historyDir).quiet();
-    await $`git config user.email "bot@plannotator.ai"`.cwd(historyDir).quiet();
+    try {
+      await $`git init`.cwd(historyDir).quiet();
+      await $`git config user.name "Plannotator"`.cwd(historyDir).quiet();
+      await $`git config user.email "bot@plannotator.ai"`.cwd(historyDir).quiet();
+    } catch (err) {
+      console.error("[Plannotator] Failed to initialize git history repo:", err);
+    }
   }
 
   return historyDir;
