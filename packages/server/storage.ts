@@ -243,7 +243,7 @@ export async function listVersions(
   if (!existsSync(join(historyDir, ".git"))) return [];
 
   try {
-    const res = await $`git log --reverse --format="%ad" --date=iso -- ${fileName}`.cwd(historyDir).quiet().nothrow();
+    const res = await $`git log --reverse --format=%ad --date=iso -- ${fileName}`.cwd(historyDir).quiet().nothrow();
     if (res.exitCode !== 0) return [];
     
     const dates = res.text().trim().split("\n").filter(Boolean);

@@ -122,6 +122,12 @@ export async function startAnnotateServer(
   process.on("SIGINT", handleSignal);
   process.on("SIGTERM", handleSignal);
 
+  const cleanup = () => {
+    process.off("SIGINT", handleSignal);
+    process.off("SIGTERM", handleSignal);
+    server?.stop();
+  };
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       server = Bun.serve({
@@ -214,7 +220,7 @@ export async function startAnnotateServer(
 
           // API: Explicitly cancel and shutdown the server
           if (url.pathname === "/api/shutdown" && req.method === "POST") {
-            setTimeout(() => server?.stop(), 10);
+            setTimeout(cleanup, 10);
             return Response.json({ ok: true });
           }
 
@@ -264,10 +270,6 @@ export async function startAnnotateServer(
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
-    stop: () => {
-      process.off("SIGINT", handleSignal);
-      process.off("SIGTERM", handleSignal);
-      server?.stop();
-    },
+    stop: cleanup,
   };
 }

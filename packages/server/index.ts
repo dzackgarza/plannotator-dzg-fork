@@ -170,6 +170,14 @@ export async function startPlannotatorServer(
   process.on("SIGINT", handleSignal);
   process.on("SIGTERM", handleSignal);
 
+  // Cleanup: unregister signal handlers and stop the server.
+  // Used by both /api/shutdown (in-request path) and the returned stop() method.
+  const cleanup = () => {
+    process.off("SIGINT", handleSignal);
+    process.off("SIGTERM", handleSignal);
+    server?.stop();
+  };
+
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
 
@@ -480,7 +488,7 @@ export async function startPlannotatorServer(
 
           // API: Explicitly cancel and shutdown the server
           if (url.pathname === "/api/shutdown" && req.method === "POST") {
-            setTimeout(() => server?.stop(), 10);
+            setTimeout(cleanup, 10);
             return Response.json({ ok: true });
           }
 
@@ -526,10 +534,6 @@ export async function startPlannotatorServer(
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
-    stop: () => {
-      process.off("SIGINT", handleSignal);
-      process.off("SIGTERM", handleSignal);
-      server?.stop();
-    },
+    stop: cleanup,
   };
 }
