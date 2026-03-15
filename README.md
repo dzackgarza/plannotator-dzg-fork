@@ -6,6 +6,53 @@ This is a personal fork of [backnotprop/plannotator](https://github.com/backnotp
 
 ---
 
+## Installation (this fork)
+
+This fork is not published to npm or the Claude Code plugin marketplace. Install from source:
+
+```bash
+git clone https://github.com/dzackgarza/plannotator-dzg-fork.git
+cd plannotator-dzg-fork
+bun install
+bun run build:review    # build review UI (embedded by hook build)
+bun run build:hook      # build plan/annotate UI
+bun run build:opencode  # build OpenCode plugin
+bun build apps/hook/server/index.ts --compile --outfile plannotator
+cp plannotator ~/.local/bin/plannotator
+```
+
+Verify: `plannotator --version`
+
+**Claude Code hook** — register in `~/.claude/settings.json` (see [Claude Code hook](#claude-code-hook)).
+
+**OpenCode plugin** — point `opencode.json` at the built plugin directory:
+
+```json
+{
+  "plugin": ["file:///absolute/path/to/plannotator-dzg-fork/apps/opencode-plugin"]
+}
+```
+
+**Pi extension** — not yet adapted for this fork; use the upstream package.
+
+---
+
+## Environment variables
+
+All integrations share the same `plannotator` CLI binary, so these variables apply everywhere:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PLANNOTATOR_REMOTE` | unset | Set to `1` or `true` for remote mode (SSH, devcontainer). Skips browser open; prints URL. |
+| `PLANNOTATOR_PORT` | random (local), `19432` (remote) | Fixed port for the HTTP server |
+| `PLANNOTATOR_SHARE` | enabled | Set to `"disabled"` to turn off URL sharing |
+| `PLANNOTATOR_SHARE_URL` | `https://share.plannotator.ai` | Custom share portal for self-hosting |
+| `PLANNOTATOR_PASTE_URL` | unset | Custom paste API for short-link sharing |
+| `PLANNOTATOR_BROWSER` | system default | Browser to open (macOS: app name; Linux/Windows: executable path) |
+| `PLANNOTATOR_PLAN_TIMEOUT_SECONDS` | `345600` (96 hours) | Seconds to wait for a `submit_plan` decision before auto-rejecting. Set to `0` to disable. |
+
+---
+
 ## Integrations
 
 - [OpenCode plugin](#opencode-plugin) — `submit_plan`, `plannotator_review`, `plannotator_annotate` tools
@@ -15,21 +62,6 @@ This is a personal fork of [backnotprop/plannotator](https://github.com/backnotp
 ---
 
 ## OpenCode plugin
-
-### Installation
-
-```json
-// opencode.json
-{
-  "plugin": ["@plannotator/opencode@latest"]
-}
-```
-
-Restart OpenCode after adding. Also install the `plannotator` CLI for the `/plannotator-review` slash command to work:
-
-```bash
-curl -fsSL https://plannotator.ai/install.sh | bash
-```
 
 ### Tools exposed to the agent
 
@@ -117,18 +149,6 @@ The injected text instructs the agent to call `submit_plan` before implementatio
 
 ---
 
-### Environment variables (OpenCode plugin)
-
-| Variable | Default | Description |
-|---|---|---|
-| `PLANNOTATOR_REMOTE` | unset | Set to `1` or `true` for remote mode (SSH, devcontainer). Skips browser open; prints URL. |
-| `PLANNOTATOR_PORT` | random (local), `19432` (remote) | Fixed port for the HTTP server |
-| `PLANNOTATOR_PLAN_TIMEOUT_SECONDS` | `345600` (96 hours) | Seconds to wait for a `submit_plan` decision before auto-rejecting. Set to `0` to disable. |
-| `PLANNOTATOR_SHARE` | enabled | Set to `"disabled"` to turn off URL sharing |
-| `PLANNOTATOR_SHARE_URL` | `https://share.plannotator.ai` | Custom share portal for self-hosting |
-
----
-
 ## Claude Code hook
 
 ### How it works
@@ -163,14 +183,7 @@ Deny:
 
 ### Installation
 
-**Plugin (recommended):**
-```
-/plugin marketplace add backnotprop/plannotator
-/plugin install plannotator@plannotator
-```
-Restart Claude Code after installing.
-
-**Manual hook** (`~/.claude/settings.json`):
+Add to `~/.claude/settings.json`:
 ```json
 {
   "hooks": {
@@ -208,17 +221,6 @@ plannotator sessions --clean  Remove stale session files
 | Annotate | Random ephemeral | `19432` |
 
 The server binds to `localhost` only. In remote mode it prints the URL; locally it opens the browser automatically.
-
-### Environment variables (Claude Code CLI)
-
-| Variable | Default | Description |
-|---|---|---|
-| `PLANNOTATOR_REMOTE` | unset | `1` or `true`: fixed port, skip browser open, print URL |
-| `PLANNOTATOR_PORT` | random / `19432` | Override listen port |
-| `PLANNOTATOR_BROWSER` | system default | Browser to open (macOS: app name; Linux/Windows: executable path) |
-| `PLANNOTATOR_SHARE` | enabled | `"disabled"` turns off sharing |
-| `PLANNOTATOR_SHARE_URL` | `https://share.plannotator.ai` | Custom share portal |
-| `PLANNOTATOR_PASTE_URL` | unset | Custom paste API for short-link sharing |
 
 ### Plan history
 
