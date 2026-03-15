@@ -233,6 +233,7 @@ export async function runPlannotatorReviewTool(
     shareBaseUrl: env.getShareBaseUrl(),
     htmlContent: env.htmlContent,
     opencodeClient: env.client,
+    cwd: env.directory,
     onReady: deps.onReady,
   });
 
