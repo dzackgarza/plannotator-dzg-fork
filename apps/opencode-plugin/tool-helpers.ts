@@ -117,13 +117,17 @@ function buildAnnotateFeedbackMessage(
 function buildReviewToolResponse(url: string, diffType: ReviewToolDiffType): string {
   return `Started code review server at ${url}
 
-Please share this URL with the user and ask them to review the ${diffType} diff. The UI will open in their browser. When they submit feedback, it will be sent back to this session.`;
+Please share this URL with the user and ask them to review the ${diffType} diff. The UI will open in their browser. When they submit feedback, it will be sent back to this session.
+
+Wait for the user's submitted feedback before proceeding with any further implementation or follow-up response.`;
 }
 
 function buildAnnotateToolResponse(url: string, filePath: string): string {
   return `Started annotation server at ${url}
 
-Please share this URL with the user and ask them to review ${filePath}. The UI will open in their browser. When they submit feedback, it will be sent back to this session.`;
+Please share this URL with the user and ask them to review ${filePath}. The UI will open in their browser. When they submit feedback, it will be sent back to this session.
+
+Wait for the user's submitted feedback before proceeding with any further implementation or follow-up response.`;
 }
 
 function describeResolutionFailure(

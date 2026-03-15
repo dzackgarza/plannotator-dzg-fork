@@ -158,6 +158,7 @@ describe("runPlannotatorAnnotateTool", () => {
     );
 
     expect(result).toContain("Started annotation server at http://localhost:19432/annotate");
+    expect(result).toContain("Wait for the user's submitted feedback before proceeding");
     expect(started.filePath).toBe(resolve(projectRoot, "docs/design.md"));
     expect(started.markdown).toContain("Initial draft.");
 
@@ -277,6 +278,7 @@ describe("runPlannotatorReviewTool", () => {
     );
 
     expect(result).toContain("Started code review server at http://localhost:19432/review");
+    expect(result).toContain("Wait for the user's submitted feedback before proceeding");
     expect(started.diffType).toBe("uncommitted");
     expect(started.defaultBranch).toBe("main");
     expect(started.gitRef).toBe("Uncommitted changes");
