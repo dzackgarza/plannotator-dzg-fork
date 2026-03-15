@@ -1,180 +1,331 @@
-<p align="center">
-  <img src="apps/marketing/public/og-image.webp" alt="Plannotator" width="80%" />
-</p>
+# Plannotator (dzg fork)
 
-# Plannotator
+Interactive plan and code review for AI coding agents. Exposes a local HTTP server with an annotation UI; the agent blocks on a tool call until the user approves, denies, or cancels.
 
-Interactive Plan & Code Review for AI Coding Agents. Mark up and refine your plans or code diffs using a visual UI, share for team collaboration, and seamlessly integrate with **Claude Code**, **OpenCode**, **Pi**, and **Codex**.
-
-**Plan Mode Demos:**
-<table>
-<tr>
-<td align="center" width="50%">
-<h3>Claude Code</h3>
-<a href="https://www.youtube.com/watch?v=a_AT7cEN_9I">
-<img src="apps/marketing/public/youtube.png" alt="Claude Code Demo" width="100%" />
-</a>
-<p><a href="https://www.youtube.com/watch?v=a_AT7cEN_9I">Watch Demo</a></p>
-</td>
-<td align="center" width="50%">
-<h3>OpenCode</h3>
-<a href="https://youtu.be/_N7uo0EFI-U">
-<img src="apps/marketing/public/youtube-opencode.png" alt="OpenCode Demo" width="100%" />
-</a>
-<p><a href="https://youtu.be/_N7uo0EFI-U">Watch Demo</a></p>
-</td>
-</tr>
-</table>
-
-**New:** [Code Review](https://x.com/backnotprop/status/2031145299738263567?s=20)
-
-
-### Features
-
-<table>
-<tr><td><strong>Visual Plan Review</strong></td><td>Built-in hook</td><td>Approve or deny agent plans with inline annotations</td></tr>
-<tr><td><strong>Plan Diff</strong></td><td>Automatic</td><td>See what changed when the agent revises a plan</td></tr>
-<tr><td><strong>Code Review</strong></td><td><code>/plannotator-review</code></td><td>Review git diffs with line-level annotations</td></tr>
-<tr><td><strong>Annotate Any File</strong></td><td><code>/plannotator-annotate</code></td><td>Annotate any markdown file and send feedback to your agent</td></tr>
-</table>
-
-#### Sharing Plans
-
-Plannotator lets you privately share plans, annotations, and feedback with colleagues. For example, a colleague can annotate a shared plan, and you can import their feedback to send directly back to the coding agent.
-
-**Small plans** are encoded entirely in the URL hash. No server involved, nothing stored anywhere.
-
-**Large plans** use a short link service with **end-to-end encryption**. Your plan is encrypted with AES-256-GCM in your browser before upload. The server stores only ciphertext it cannot read. The decryption key lives only in the URL you share. Pastes auto-delete after 7 days.
-
-- Zero-knowledge storage, similar to [PrivateBin](https://privatebin.info/)
-- Fully open source and self-hostable ([see docs](https://plannotator.ai/docs/guides/sharing-and-collaboration/))
-
-## Install
-
-- [Claude Code](#install-for-claude-code)
-- [OpenCode](#install-for-opencode)
-- [Pi](#install-for-pi)
-- [Codex](#install-for-codex)
-
-## Install for Claude Code
-
-**Install the `plannotator` command:**
-
-**macOS / Linux / WSL:**
-
-```bash
-curl -fsSL https://plannotator.ai/install.sh | bash
-```
-
-**Windows PowerShell:**
-
-```powershell
-irm https://plannotator.ai/install.ps1 | iex
-```
-
-**Then in Claude Code:**
-
-```
-/plugin marketplace add backnotprop/plannotator
-/plugin install plannotator@plannotator
-
-# IMPORTANT: Restart Claude Code after plugin install
-```
-
-See [apps/hook/README.md](apps/hook/README.md) for detailed installation instructions including a `manual hook` approach.
+This is a personal fork of [backnotprop/plannotator](https://github.com/backnotprop/plannotator) with additional features tracked on this branch.
 
 ---
 
-## Install for OpenCode
+## Integrations
 
-Add to your `opencode.json`:
+- [OpenCode plugin](#opencode-plugin) — `submit_plan`, `plannotator_review`, `plannotator_annotate` tools
+- [Claude Code hook](#claude-code-hook) — `ExitPlanMode` interceptor
+- [Pi extension](#pi-extension) — `/plannotator` command, `exit_plan_mode` tool
+
+---
+
+## OpenCode plugin
+
+### Installation
 
 ```json
+// opencode.json
 {
   "plugin": ["@plannotator/opencode@latest"]
 }
 ```
 
-**Run the install script** to get `/plannotator-review`:
+Restart OpenCode after adding. Also install the `plannotator` CLI for the `/plannotator-review` slash command to work:
 
 ```bash
 curl -fsSL https://plannotator.ai/install.sh | bash
 ```
 
-**Windows:**
-```powershell
-irm https://plannotator.ai/install.ps1 | iex
-```
+### Tools exposed to the agent
 
-This also clears any cached plugin versions. Then restart OpenCode.
+All three tools are registered as **primary-only** (visible to the top-level agent, hidden from sub-agents). The plugin enforces this by appending them to `experimental.primary_tools` in the OpenCode config on startup.
 
 ---
 
-## Install for Pi
+#### `submit_plan`
+
+Blocks the agent until the user approves or rejects the plan in the browser UI.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `plan` | string | yes | Complete implementation plan in markdown |
+| `summary` | string | yes | One- or two-sentence summary of what the plan accomplishes |
+| `commit_message` | string | yes | What changed since the previous version; references addressed feedback on revisions |
+
+**Behavior:**
+
+1. Starts a local HTTP server serving the plan annotation UI.
+2. Opens the browser (local) or prints the URL (remote).
+3. Blocks `waitForDecision()` until the user acts.
+4. On **approve**: returns a success string; if the user added annotations, they are included as implementation notes.
+5. On **approve with agent switch**: additionally calls `session.prompt` with `noReply: true` to hand off to the target agent (e.g. `build`), and cycles the TUI display.
+6. On **deny**: returns the user's structured feedback and instructs the agent to revise and resubmit.
+7. On **cancel**: returns `"Plan review cancelled by user."`.
+8. On **timeout**: returns a timeout message and releases the port. The agent must call `submit_plan` again.
+
+The server shuts down deterministically via `POST /api/shutdown` sent by the UI after the user acts. A 10-second fallback `setTimeout` stops the server if the UI disconnects without calling shutdown.
+
+**Plan history:** Each submission saves `~/.plannotator/plans/{project}/{slug}.md` and commits it to a git repo in that directory. The commit message comes from `commit_message`. Approve/deny events are recorded as empty git commits with feedback in the message body.
+
+---
+
+#### `plannotator_review`
+
+Opens the current git diff in a code review UI. The agent does not block — feedback is forwarded to the session asynchronously after the user submits.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `diff_type` | enum | no | Which diff to show. Default: `uncommitted` |
+
+**`diff_type` values:**
+
+| Value | Git command equivalent |
+|---|---|
+| `uncommitted` | `git diff HEAD` (staged + unstaged) |
+| `staged` | `git diff --cached` |
+| `unstaged` | `git diff` |
+| `last-commit` | `git diff HEAD~1 HEAD` |
+| `branch` | `git diff {default-branch}...HEAD` |
+
+**Behavior:** The tool returns immediately after starting the server. A background IIFE posts the user's feedback back to the session via `session.prompt` once the review is complete. If the user cancels, the agent receives `"Code review cancelled by user."`.
+
+---
+
+#### `plannotator_annotate`
+
+Opens a markdown file in the annotation UI. Non-blocking — same async feedback pattern as `plannotator_review`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `file_path` | string | yes | Absolute or relative path to the markdown file |
+
+**Behavior:** Reads the file, serves it in the annotation UI. Feedback (inline annotations + global notes) is forwarded to the session asynchronously. On cancel: `"Annotation of {file_path} cancelled by user."`.
+
+---
+
+### System prompt injection
+
+The plugin injects planning instructions into the system prompt via `experimental.chat.system.transform`. Injection is **skipped** when:
+
+- The session is a title-generation request (system prompt contains `"title generator"` or `"generate a title"`)
+- The most recent user message's agent cannot be determined
+- The agent is `"build"` (hardcoded exclusion)
+- The agent's `mode` field is `"subagent"` (checked via `app.agents()`)
+
+The injected text instructs the agent to call `submit_plan` before implementation and not to proceed until approved.
+
+---
+
+### Slash command
+
+`/plannotator-review` — Triggers a code review for uncommitted changes in the current session. Implemented via the `event` handler listening for `command.executed` or `tui.command.execute` events with `name === "plannotator-review"`.
+
+---
+
+### Environment variables (OpenCode plugin)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PLANNOTATOR_REMOTE` | unset | Set to `1` or `true` for remote mode (SSH, devcontainer). Skips browser open; prints URL. |
+| `PLANNOTATOR_PORT` | random (local), `19432` (remote) | Fixed port for the HTTP server |
+| `PLANNOTATOR_PLAN_TIMEOUT_SECONDS` | `345600` (96 hours) | Seconds to wait for a `submit_plan` decision before auto-rejecting. Set to `0` to disable. |
+| `PLANNOTATOR_SHARE` | enabled | Set to `"disabled"` to turn off URL sharing |
+| `PLANNOTATOR_SHARE_URL` | `https://share.plannotator.ai` | Custom share portal for self-hosting |
+
+---
+
+## Claude Code hook
+
+### How it works
+
+The `plannotator` CLI is invoked by a `PermissionRequest` hook on the `ExitPlanMode` tool. Claude Code pipes the hook event JSON to stdin; the CLI reads the plan content, serves the UI, and writes an approve/deny JSON decision to stdout.
+
+```
+Claude Code → ExitPlanMode → PermissionRequest hook → plannotator CLI (stdin/stdout)
+```
+
+**Decision output format:**
+
+Approve:
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PermissionRequest",
+    "decision": { "behavior": "allow", "updatedPermissions": [...] }
+  }
+}
+```
+
+Deny:
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PermissionRequest",
+    "decision": { "behavior": "deny", "message": "YOUR PLAN WAS NOT APPROVED. ..." }
+  }
+}
+```
+
+### Installation
+
+**Plugin (recommended):**
+```
+/plugin marketplace add backnotprop/plannotator
+/plugin install plannotator@plannotator
+```
+Restart Claude Code after installing.
+
+**Manual hook** (`~/.claude/settings.json`):
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          { "type": "command", "command": "plannotator", "timeout": 345600 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### CLI subcommands
+
+```
+plannotator                   Plan review (default — reads hook event from stdin)
+plannotator review            Code review (uncommitted changes)
+plannotator annotate <file>   Markdown annotation
+plannotator sessions          List active server sessions
+plannotator sessions --open [N]  Reopen session N in browser
+plannotator sessions --clean  Remove stale session files
+```
+
+`<file>` accepts an `@`-prefixed path (Claude Code file reference syntax); the `@` is stripped automatically.
+
+### Server ports
+
+| Mode | Default port | Remote default |
+|---|---|---|
+| Plan review | Random ephemeral | `19432` |
+| Code review | Random ephemeral | `19432` |
+| Annotate | Random ephemeral | `19432` |
+
+The server binds to `localhost` only. In remote mode it prints the URL; locally it opens the browser automatically.
+
+### Environment variables (Claude Code CLI)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PLANNOTATOR_REMOTE` | unset | `1` or `true`: fixed port, skip browser open, print URL |
+| `PLANNOTATOR_PORT` | random / `19432` | Override listen port |
+| `PLANNOTATOR_BROWSER` | system default | Browser to open (macOS: app name; Linux/Windows: executable path) |
+| `PLANNOTATOR_SHARE` | enabled | `"disabled"` turns off sharing |
+| `PLANNOTATOR_SHARE_URL` | `https://share.plannotator.ai` | Custom share portal |
+| `PLANNOTATOR_PASTE_URL` | unset | Custom paste API for short-link sharing |
+
+### Plan history
+
+Approved plans are saved to `~/.plannotator/plans/{project}/{slug}.md` where:
+- `project` is derived from the git repo root directory name (sanitized)
+- `slug` is `{first-heading-kebab-case}-YYYY-MM-DD`
+
+The directory is a git repo. Each plan submission commits the current content; approve/deny events are recorded as additional empty commits with feedback in the message body.
+
+### Obsidian integration
+
+Enabled in the UI settings panel. When active, approved plans are also written to an Obsidian vault with YAML frontmatter (`created`, `source`, `tags`) and a `[[Plannotator Plans]]` backlink.
+
+---
+
+## Pi extension
+
+### Installation
 
 ```bash
 pi install npm:@plannotator/pi-extension
 ```
 
-Then start Pi with `--plan` to enter plan mode, or toggle it during a session with `/plannotator`.
+### Flags
 
-See [apps/pi-extension/README.md](apps/pi-extension/README.md) for full usage details, commands, and flags.
+| Flag | Description |
+|---|---|
+| `--plan` | Start in planning mode immediately |
+| `--plan-file <path>` | Custom plan file path (default: `PLAN.md`) |
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/plannotator` | Toggle planning mode on/off |
+| `Ctrl+Alt+P` | Toggle planning mode (keyboard shortcut) |
+| `/plannotator-review` | Open code review UI |
+| `/plannotator-annotate <file>` | Open annotation UI for a markdown file |
+
+### Planning mode behavior
+
+When active:
+- Write tool is restricted to the plan file only
+- `grep`, `find`, `ls`, `exit_plan_mode` tools are always available
+- `[DONE:n]` markers in the plan track execution progress
+- Calling `exit_plan_mode` opens the browser review UI
+
+The Pi extension uses a Node-compatible server (`apps/pi-extension/server.ts`) rather than Bun's `$`-shell APIs. It exposes the same HTTP endpoints as the shared Bun servers: `/api/approve`, `/api/deny`, `/api/cancel`, `/api/reset`, `/api/shutdown`.
 
 ---
 
-## Install for Codex
+## Server HTTP API
 
-**Install the `plannotator` command:**
+All server types expose the same API surface. The embedded UI communicates with `localhost` only.
 
-**macOS / Linux / WSL:**
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Serves the embedded UI (SPA) |
+| `GET` | `/api/plan` | Returns plan content, version info, diff vs. previous version |
+| `POST` | `/api/approve` | User approves; resolves `waitForDecision()` with `approved: true` |
+| `POST` | `/api/deny` | User denies with feedback; resolves with `approved: false` |
+| `POST` | `/api/cancel` | User cancels; resolves with `cancelled: true`; stops server |
+| `POST` | `/api/reset` | Clears draft annotation state; session continues |
+| `POST` | `/api/shutdown` | UI signals server to stop after response is flushed |
+
+Signal handling: `SIGINT` and `SIGTERM` resolve `waitForDecision()` with `cancelled: true` and stop the server. All shutdown paths (UI, signal, returned `stop()`) call the same `cleanup()` function so signal listeners are always unregistered.
+
+---
+
+## Plan version storage
+
+```
+~/.plannotator/
+  plans/
+    {project}/          ← git repo (one per project)
+      {slug}.md         ← single file per plan slug
+```
+
+Git history tracks every version. `git log -- {slug}.md` shows all revisions with commit messages from the agent. Approve/deny events are empty commits with feedback in the body.
+
+The `slug` format is `{heading-kebab}-YYYY-MM-DD`. If the plan has no heading, the slug is `plan-YYYY-MM-DD`.
+
+---
+
+## Remote / devcontainer setup
 
 ```bash
-curl -fsSL https://plannotator.ai/install.sh | bash
+export PLANNOTATOR_REMOTE=1
+export PLANNOTATOR_PORT=9999   # port you will forward
 ```
 
-**Windows PowerShell:**
+The server will print the URL instead of opening the browser. Forward the port to your local machine:
 
-```powershell
-irm https://plannotator.ai/install.ps1 | iex
-```
-
-**Then in Codex — feedback flows back into the agent loop automatically:**
-
-```
-!plannotator review           # Code review for current changes
-!plannotator annotate file.md # Annotate a markdown file
-```
-
-Plan mode is not yet supported.
-
-See [apps/codex/README.md](apps/codex/README.md) for details.
+- **VS Code devcontainer**: auto-forwarded; check the Ports panel.
+- **SSH**: add `LocalForward 9999 localhost:9999` to `~/.ssh/config`.
 
 ---
 
-## How It Works
+## Fork-specific changes (vs. upstream)
 
-When your AI agent finishes planning, Plannotator:
+- **Deterministic server teardown**: all shutdown paths (`/api/shutdown`, SIGINT/SIGTERM, `stop()`) call a shared `cleanup()` function — no bare `setTimeout` as the primary stop mechanism.
+- **Cancel / Reset UI actions**: Cancel button resolves `waitForDecision()` immediately and frees the port; Reset button clears draft annotations without ending the session.
+- **Git-based plan versioning**: replaces file-numbered `001.md / 002.md` history with a single-file-per-slug git repo under `~/.plannotator/plans/{project}/`.
+- **`commit_message` parameter on `submit_plan`**: agents document what changed since the previous version.
+- **Signal cleanup fix**: `/api/shutdown` now runs the same `cleanup()` as `stop()`, preventing stale SIGINT/SIGTERM listeners across multiple server starts.
+- **Pi extension cancel/reset endpoints**: `/api/cancel` and `/api/reset` added to the Node-based pi-extension server.
 
-1. Opens the Plannotator UI in your browser
-2. Lets you annotate the plan visually (delete, insert, replace, comment)
-3. **Approve** → Agent proceeds with implementation
-4. **Request changes** → Your annotations are sent back as structured feedback
-
----
-
-## License
-
-Copyright 2025-2026 backnotprop
-
-This project is licensed under either of
-
-- [Apache License, Version 2.0](LICENSE-APACHE) ([http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
-- [MIT license](LICENSE-MIT) ([http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
-
-at your option.
-
-### Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in this project by you, as defined in the Apache-2.0 license,
-shall be dual licensed as above, without any additional terms or conditions.
+Open issues for remaining work:
+- [#8](https://github.com/dzackgarza/plannotator-dzg-fork/issues/8) — Consolidate pi-extension git storage into `packages/server/storage.ts`
+- [#9](https://github.com/dzackgarza/plannotator-dzg-fork/issues/9) — Thread agent identity into git commit authorship
