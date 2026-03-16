@@ -111,7 +111,26 @@ function buildAnnotateFeedbackMessage(
   filePath: string,
   feedback: string,
 ): string {
-  return `# Markdown Annotations\n\nFile: ${filePath}\n\n${feedback}\n\nPlease address the annotation feedback above. When done, resubmit the updated document for annotation by calling \`plannotator_annotate\` again with the same file path.`;
+  return `# Markdown Annotations
+
+File: ${filePath}
+
+${feedback}
+
+## Instructions for Addressing Feedback
+
+Before making any edits:
+1. Read all feedback items carefully and identify exactly what needs to change.
+2. Research any open questions raised by the feedback before writing.
+3. Plan how each feedback item will be addressed — write out your edit plan before touching any file.
+4. Determine if any items require further clarification or information you do not yet have.
+
+When editing:
+- Use targeted edit tools to make surgical, minimal changes. Do NOT rewrite the entire file.
+- Address only what the feedback explicitly requests — avoid scope creep.
+- Prefer the smallest diff that fully resolves each feedback item.
+
+When done, call \`plannotator_annotate\` again with the same file path to resubmit for review.`;
 }
 
 function buildReviewToolResponse(url: string, diffType: ReviewToolDiffType): string {
