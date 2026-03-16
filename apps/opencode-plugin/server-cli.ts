@@ -6,15 +6,14 @@
  *   start   - Start the persistent server (keeps process alive)
  *   stop    - Stop the running server
  *   status  - Show server status
- *
- * Built as dist/server-cli.js alongside dist/index.js.
  */
 
 import {
   startPersistentServer,
+  stopServer,
+  checkServerHealth,
   PERSISTENT_SERVER_DEFAULT_PORT,
 } from "@plannotator/server/persistent";
-import { listSessions, unregisterSession } from "@plannotator/server/sessions";
 
 // @ts-ignore - Bun import attribute for text
 import indexHtml from "./plannotator.html" with { type: "text" };
@@ -35,84 +34,36 @@ function getPort(): number {
   return PERSISTENT_SERVER_DEFAULT_PORT;
 }
 
-async function healthCheck(port: number): Promise<boolean> {
-  try {
-    const resp = await fetch(`http://127.0.0.1:${port}/api/health`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function cmdStart(): Promise<void> {
-  const port = getPort();
-
-  if (await healthCheck(port)) {
-    console.log(`Plannotator server already running at http://localhost:${port}`);
-    process.exit(0);
-  }
-
-  console.log(`Starting Plannotator persistent server on port ${port}...`);
-
-  const handle = startPersistentServer({
-    planHtml,
-    reviewHtml: reviewHtmlContent,
-    port,
-  });
-
-  console.log(`Plannotator server ready at ${handle.url}`);
-
-  // Keep process alive until signalled
-  await new Promise<never>(() => {});
-}
-
-async function cmdStop(): Promise<void> {
-  const sessions = listSessions();
-  const session = sessions.find((s) => s.port === getPort());
-  if (!session) {
-    console.log("No running Plannotator server found.");
-    return;
-  }
-  try {
-    process.kill(session.pid, "SIGTERM");
-    unregisterSession(session.pid);
-    console.log(`Stopped Plannotator server (pid ${session.pid}).`);
-  } catch (e) {
-    console.error(`Failed to stop server: ${e}`);
-    process.exit(1);
-  }
-}
-
-async function cmdStatus(): Promise<void> {
-  const port = getPort();
-
-  if (await healthCheck(port)) {
-    const resp = await fetch(`http://127.0.0.1:${port}/api/health`);
-    const data = (await resp.json()) as {
-      phase: string;
-      type?: string;
-    };
-    console.log(`Running at http://localhost:${port}`);
-    console.log(
-      `Phase: ${data.phase}${data.type ? ` (${data.type})` : ""}`
-    );
-  } else {
-    console.log("Not running.");
-  }
-}
-
 switch (command) {
-  case "start":
-    await cmdStart();
+  case "start": {
+    const port = getPort();
+    if (await checkServerHealth(port)) {
+      console.log(`Plannotator server already running at http://localhost:${port}`);
+      process.exit(0);
+    }
+    console.log(`Starting Plannotator persistent server on port ${port}...`);
+    const handle = startPersistentServer({ planHtml, reviewHtml: reviewHtmlContent, port });
+    console.log(`Plannotator server ready at ${handle.url}`);
+    await new Promise<never>(() => {});
     break;
+  }
+
   case "stop":
-    await cmdStop();
+    await stopServer();
     break;
-  case "status":
-    await cmdStatus();
+
+  case "status": {
+    const port = getPort();
+    const status = await checkServerHealth(port);
+    if (status) {
+      console.log(`Running at http://localhost:${port}`);
+      console.log(`Phase: ${status.phase}${status.type ? ` (${status.type})` : ""}`);
+    } else {
+      console.log("Not running.");
+    }
     break;
+  }
+
   default:
     console.error("Usage: server-cli [start|stop|status]");
     process.exit(1);

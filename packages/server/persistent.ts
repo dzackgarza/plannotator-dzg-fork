@@ -10,7 +10,9 @@
  *   OPENCODE_BASE_URL  - OpenCode API base URL for agent listing (default: http://127.0.0.1:4096)
  */
 
-import { dirname } from "path";
+import { dirname, join } from "path";
+import { homedir } from "os";
+import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "fs";
 import { isRemoteSession } from "./remote";
 import { openEditorDiff } from "./ide";
 import {
@@ -58,7 +60,6 @@ import {
   parseWorktreeDiffType,
   validateFilePath,
 } from "./git";
-import { registerSession, unregisterSession } from "./sessions";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -169,6 +170,68 @@ type ServerPhase =
       currentDiffType?: DiffType;
       currentError?: string;
     };
+
+// ---------------------------------------------------------------------------
+// PID file — tracks the one running persistent server process
+// ---------------------------------------------------------------------------
+
+function pidFilePath(): string {
+  return join(homedir(), ".plannotator", "server.pid");
+}
+
+function writePidFile(): void {
+  const path = pidFilePath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, String(process.pid), "utf-8");
+}
+
+function clearPidFile(): void {
+  try { unlinkSync(pidFilePath()); } catch {}
+}
+
+function readPid(): number | null {
+  try {
+    const pid = parseInt(readFileSync(pidFilePath(), "utf-8").trim(), 10);
+    if (isNaN(pid)) return null;
+    process.kill(pid, 0); // throws if process is dead
+    return pid;
+  } catch {
+    clearPidFile();
+    return null;
+  }
+}
+
+/** Stop the running persistent server via SIGTERM. */
+export async function stopServer(): Promise<void> {
+  const pid = readPid();
+  if (!pid) {
+    console.log("No running Plannotator server found.");
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+    clearPidFile();
+    console.log(`Stopped Plannotator server (pid ${pid}).`);
+  } catch (e) {
+    console.error(`Failed to stop server: ${e}`);
+    process.exit(1);
+  }
+}
+
+/** Query health of the running persistent server. Returns null if not running. */
+export async function checkServerHealth(
+  port: number
+): Promise<{ phase: string; type?: string } | null> {
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!resp.ok) return null;
+    return resp.json() as Promise<{ phase: string; type?: string }>;
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Server factory
@@ -827,30 +890,16 @@ export function startPersistentServer(
 
   const serverUrl = `http://localhost:${server.port}`;
 
-  registerSession({
-    pid: process.pid,
-    port: server.port,
-    url: serverUrl,
-    mode: "plan",
-    project: "_unknown",
-    startedAt: new Date().toISOString(),
-    label: "Persistent Plannotator Server",
-  });
+  writePidFile();
 
   const cleanup = () => {
-    unregisterSession(process.pid);
+    clearPidFile();
     server.stop();
   };
 
-  process.on("exit", () => unregisterSession(process.pid));
-  process.on("SIGINT", () => {
-    cleanup();
-    process.exit(0);
-  });
-  process.on("SIGTERM", () => {
-    cleanup();
-    process.exit(0);
-  });
+  process.on("exit", clearPidFile);
+  process.on("SIGINT", () => { cleanup(); process.exit(0); });
+  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
 
   return { port: server.port, url: serverUrl, isRemote, stop: cleanup };
 }
