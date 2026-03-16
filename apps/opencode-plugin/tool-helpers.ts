@@ -111,7 +111,31 @@ function buildAnnotateFeedbackMessage(
   filePath: string,
   feedback: string,
 ): string {
-  return `# Markdown Annotations\n\nFile: ${filePath}\n\n${feedback}\n\nPlease address the annotation feedback above.`;
+  return `# Markdown Annotations
+
+File: ${filePath}
+
+${feedback}
+
+## Mandatory workflow — follow in order, do not skip steps
+
+**Step 1 — Read and triage all feedback before touching anything.**
+Read every feedback item. For each one, determine:
+- Exactly what text needs to change and where.
+- Whether the item requires research or outside information before you can address it correctly. If so, do that research now, before editing.
+- Whether the item is ambiguous or underspecified. If so, resolve the ambiguity (ask, research, or make a justified decision) before editing.
+
+**Step 2 — Write out your edit plan.**
+Before opening any file for editing, produce an explicit plan: for each feedback item, state what you will change, why, and which lines or sections are affected. Do not begin editing until this plan is complete.
+
+**Step 3 — Make targeted, surgical edits using edit tools.**
+Use edit tools (not write/overwrite tools) to apply each change as a minimal, targeted diff.
+- Never rewrite or regenerate the entire file. If you find yourself replacing the whole file, stop — that is wrong.
+- Touch only the lines required to address the feedback. Leave everything else unchanged.
+- One feedback item at a time; verify each change before moving to the next.
+
+**Step 4 — Resubmit for annotation.**
+When all feedback items have been addressed, call \`plannotator_annotate\` again with the same file path so the user can review the updated document.`;
 }
 
 function buildReviewToolResponse(url: string, diffType: ReviewToolDiffType): string {
@@ -190,8 +214,7 @@ async function forwardReviewFeedbackInBackground(
     } catch {
       // Session may not be available once the review completes.
     } finally {
-      // Graceful shutdown happens via /api/shutdown from the UI
-      // This is a fallback to ensure the server eventually stops
+      // Fallback: stop ephemeral server after decision
       setTimeout(() => server.stop(), 10000);
     }
   })();
@@ -237,8 +260,7 @@ async function forwardAnnotateFeedbackInBackground(
     } catch {
       // Session may not be available once annotation completes.
     } finally {
-      // Graceful shutdown happens via /api/shutdown from the UI
-      // This is a fallback to ensure the server eventually stops
+      // Fallback: stop ephemeral server after decision
       setTimeout(() => server.stop(), 10000);
     }
   })();

@@ -10,6 +10,7 @@ import { mkdirSync } from "fs";
 import { openBrowser } from "./browser";
 import { validateImagePath, validateUploadExtension, UPLOAD_DIR } from "./image";
 import { saveDraft, loadDraft, deleteDraft } from "./draft";
+import { saveAnnotations, saveFinalSnapshot, getHistoryDir } from "./storage";
 
 /** Serve images from local paths or temp uploads. Used by all 3 servers. */
 export async function handleImage(req: Request): Promise<Response> {
@@ -134,4 +135,62 @@ export async function handleServerReady(
   if (!isRemote || process.env.PLANNOTATOR_BROWSER) {
     await openBrowser(url);
   }
+}
+
+/** Shared parameters for plan finalization helpers. */
+export interface PlanFinalizeParams {
+  slug: string;
+  project?: string;
+  versionInfo?: { version: number };
+  plan: string;
+  feedback: string | undefined;
+  planSaveEnabled: boolean;
+  planSaveCustomPath?: string;
+}
+
+/**
+ * Save plan approval: write annotations + final snapshot + history git commit.
+ * Returns the saved file path if saved, or undefined.
+ */
+export async function savePlanApproval(params: PlanFinalizeParams): Promise<string | undefined> {
+  const { slug, project, versionInfo, plan, feedback, planSaveEnabled, planSaveCustomPath } = params;
+  if (!planSaveEnabled || !slug) return undefined;
+
+  const annotations = feedback || "";
+  if (annotations) saveAnnotations(slug, annotations, planSaveCustomPath);
+  const savedPath = saveFinalSnapshot(slug, "approved", plan, annotations, planSaveCustomPath);
+
+  if (feedback && project && versionInfo) {
+    try {
+      const historyDir = await getHistoryDir(project);
+      const msg = `Approve plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
+      await Bun.$`git commit --allow-empty -m ${msg}`.cwd(historyDir).quiet().nothrow();
+    } catch {}
+  }
+
+  return savedPath;
+}
+
+/**
+ * Save plan denial: write annotations + final snapshot + history git commit.
+ * Returns the saved file path if saved, or undefined.
+ */
+export async function savePlanDenial(
+  params: Omit<PlanFinalizeParams, "feedback"> & { feedback: string }
+): Promise<string | undefined> {
+  const { slug, project, versionInfo, plan, feedback, planSaveEnabled, planSaveCustomPath } = params;
+  if (!planSaveEnabled || !slug) return undefined;
+
+  saveAnnotations(slug, feedback, planSaveCustomPath);
+  const savedPath = saveFinalSnapshot(slug, "denied", plan, feedback, planSaveCustomPath);
+
+  if (project && versionInfo) {
+    try {
+      const historyDir = await getHistoryDir(project);
+      const msg = `Reject plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
+      await Bun.$`git commit --allow-empty -m ${msg}`.cwd(historyDir).quiet().nothrow();
+    } catch {}
+  }
+
+  return savedPath;
 }
