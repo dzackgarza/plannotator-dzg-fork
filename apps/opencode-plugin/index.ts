@@ -444,7 +444,7 @@ Do NOT proceed with implementation until your plan is approved.
             });
 
             if (!r) {
-              return `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`;
+              return `[Plannotator] No response within ${timeoutSeconds} seconds. The review session is still open — please call submit_plan again or open the review UI to cancel.`;
             }
             result = (await r.json()) as PlanDecision;
           }
