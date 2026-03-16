@@ -214,7 +214,10 @@ export const PlannotatorPlugin: Plugin = async (ctx) => {
       // @ts-ignore - share config may exist
       const share = response?.data?.share;
       if (share !== undefined) return share !== "disabled";
-    } catch {}
+    } catch (err) {
+      // Config read is best-effort; fall back to env var
+      console.error("[Plannotator] Failed to read share config:", err);
+    }
     return process.env.PLANNOTATOR_SHARE !== "disabled";
   }
 
