@@ -186,8 +186,7 @@ if (args[0] === "sessions") {
 
   // Stop the server after flushing the approve/deny response to the browser.
   // Calling process.exit() immediately would race with that in-flight response.
-  // Instead, let the event loop drain (the server's /api/shutdown handler fires
-  // when the UI confirms receipt), with a fallback timeout to ensure we exit.
+  // Give the event loop a moment to drain before exiting.
   setTimeout(() => { server.stop(); process.exit(0); }, 5000);
 
 } else if (args[0] === "annotate") {

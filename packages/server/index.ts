@@ -22,19 +22,16 @@ import {
 import {
   generateSlug,
   savePlan,
-  saveAnnotations,
-  saveFinalSnapshot,
   saveToHistory,
   getPlanVersion,
   getPlanVersionPath,
   getVersionCount,
   listVersions,
   listProjectPlans,
-  getHistoryDir,
 } from "./storage";
 import { getRepoInfo } from "./repo";
 import { detectProjectName } from "./project";
-import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, type OpencodeClient } from "./shared-handlers";
+import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, savePlanApproval, savePlanDenial, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { handleDoc, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc } from "./reference-handlers";
 import { createEditorAnnotationHandler } from "./editor-annotations";
@@ -397,25 +394,15 @@ export async function startPlannotatorServer(
             }
 
             // Save annotations and final snapshot (if enabled)
-            let savedPath: string | undefined;
-            if (planSaveEnabled) {
-              const annotations = feedback || "";
-              if (annotations) {
-                saveAnnotations(slug, annotations, planSaveCustomPath);
-              }
-              savedPath = saveFinalSnapshot(slug, "approved", plan, annotations, planSaveCustomPath);
-              
-              // Add feedback to history if feedback was provided
-              if (feedback) {
-                try {
-                  const historyDir = await getHistoryDir(project);
-                  const msg = `Approve plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
-                  await Bun.$`git commit --allow-empty -m ${msg}`.cwd(historyDir).quiet().nothrow();
-                } catch (e) {
-                  console.error("Failed to commit approval feedback to history", e);
-                }
-              }
-            }
+            const savedPath = await savePlanApproval({
+              slug,
+              project,
+              versionInfo,
+              plan,
+              feedback,
+              planSaveEnabled,
+              planSaveCustomPath,
+            });
 
             // Clean up draft on successful submit
             deleteDraft(draftKey);
@@ -448,20 +435,15 @@ export async function startPlannotatorServer(
             }
 
             // Save annotations and final snapshot (if enabled)
-            let savedPath: string | undefined;
-            if (planSaveEnabled) {
-              saveAnnotations(slug, feedback, planSaveCustomPath);
-              savedPath = saveFinalSnapshot(slug, "denied", plan, feedback, planSaveCustomPath);
-              
-              // Add feedback to history
-              try {
-                const historyDir = await getHistoryDir(project);
-                const msg = `Reject plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
-                await Bun.$`git commit --allow-empty -m ${msg}`.cwd(historyDir).quiet().nothrow();
-              } catch (e) {
-                console.error("Failed to commit rejection feedback to history", e);
-              }
-            }
+            const savedPath = await savePlanDenial({
+              slug,
+              project,
+              versionInfo,
+              plan,
+              feedback,
+              planSaveEnabled,
+              planSaveCustomPath,
+            });
 
             deleteDraft(draftKey);
             resolveDecision({ approved: false, feedback, savedPath });

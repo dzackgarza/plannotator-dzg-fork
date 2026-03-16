@@ -816,7 +816,9 @@ var PlannotatorPlugin = async (ctx) => {
       const share = response?.data?.share;
       if (share !== undefined)
         return share !== "disabled";
-    } catch {}
+    } catch (err) {
+      console.error("[Plannotator] Failed to read share config:", err);
+    }
     return process.env.PLANNOTATOR_SHARE !== "disabled";
   }
   function getShareBaseUrl() {
@@ -980,7 +982,7 @@ Do NOT proceed with implementation until your plan is approved.
               throw err;
             });
             if (!r) {
-              return `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`;
+              return `[Plannotator] No response within ${timeoutSeconds} seconds. The review session is still open \u2014 please call submit_plan again or open the review UI to cancel.`;
             }
             result = await r.json();
           }

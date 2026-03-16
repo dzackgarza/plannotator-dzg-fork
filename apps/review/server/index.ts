@@ -78,7 +78,7 @@ const server = await startReviewServer({
 // Wait for user feedback submission
 const result = await server.waitForDecision();
 
-// Give browser time to send /api/shutdown or fallback
+// Give browser time to flush the response before shutting down
 setTimeout(() => server.stop(), 5000);
 
 // Output the feedback as JSON

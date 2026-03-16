@@ -22,15 +22,12 @@ import {
 } from "./integrations";
 import {
   generateSlug,
-  saveAnnotations,
-  saveFinalSnapshot,
   saveToHistory,
   getPlanVersion,
   getPlanVersionPath,
   getVersionCount,
   listVersions,
   listProjectPlans,
-  getHistoryDir,
 } from "./storage";
 import { getRepoInfo } from "./repo";
 import { detectProjectName } from "./project";
@@ -40,6 +37,8 @@ import {
   handleDraftSave,
   handleDraftLoad,
   handleDraftDelete,
+  savePlanApproval,
+  savePlanDenial,
 } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import {
@@ -471,28 +470,15 @@ export function startPersistentServer(
           if (body.bear?.plan) await saveToBear(body.bear).catch(() => {});
         } catch {}
 
-        let savedPath: string | undefined;
-        if (planSaveEnabled && slug) {
-          const annotations = feedback || "";
-          if (annotations) saveAnnotations(slug, annotations, planSaveCustomPath);
-          savedPath = saveFinalSnapshot(
-            slug,
-            "approved",
-            d.plan,
-            annotations,
-            planSaveCustomPath
-          );
-          if (feedback && project && versionInfo) {
-            try {
-              const historyDir = await getHistoryDir(project);
-              const msg = `Approve plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
-              await Bun.$`git commit --allow-empty -m ${msg}`
-                .cwd(historyDir)
-                .quiet()
-                .nothrow();
-            } catch {}
-          }
-        }
+        const savedPath = await savePlanApproval({
+          slug: slug ?? "",
+          project,
+          versionInfo,
+          plan: d.plan,
+          feedback,
+          planSaveEnabled,
+          planSaveCustomPath,
+        });
 
         deleteDraft(draftKey);
         const effectivePermissionMode =
@@ -529,27 +515,15 @@ export function startPersistentServer(
           }
         } catch {}
 
-        let savedPath: string | undefined;
-        if (planSaveEnabled && slug) {
-          saveAnnotations(slug, feedback, planSaveCustomPath);
-          savedPath = saveFinalSnapshot(
-            slug,
-            "denied",
-            d.plan,
-            feedback,
-            planSaveCustomPath
-          );
-          if (project && versionInfo) {
-            try {
-              const historyDir = await getHistoryDir(project);
-              const msg = `Reject plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
-              await Bun.$`git commit --allow-empty -m ${msg}`
-                .cwd(historyDir)
-                .quiet()
-                .nothrow();
-            } catch {}
-          }
-        }
+        const savedPath = await savePlanDenial({
+          slug: slug ?? "",
+          project,
+          versionInfo,
+          plan: d.plan,
+          feedback,
+          planSaveEnabled,
+          planSaveCustomPath,
+        });
 
         deleteDraft(draftKey);
         const snap2 = serverPhase;
