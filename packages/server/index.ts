@@ -124,7 +124,7 @@ export async function startPlannotatorServer(
 
   // Version history: save plan and detect previous version
   const project = (await detectProjectName()) ?? "_unknown";
-  const historyResult = await saveToHistory(project, slug, plan, commitMessage);
+  const historyResult = await saveToHistory(project, slug, plan, commitMessage, origin);
   const currentPlanPath = historyResult.path;
   const previousPlan =
     historyResult.version > 1

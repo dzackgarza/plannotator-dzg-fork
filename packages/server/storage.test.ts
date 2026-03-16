@@ -96,6 +96,14 @@ describe("saveToHistory", () => {
     expect(readFileSync(result.path, "utf-8")).toBe("# V1");
   });
 
+  test("creates version with specified origin", async () => {
+    const slug = `origin-version-${Date.now()}`;
+    const result = await saveToHistory("test-project", slug, "# V1", undefined, "claude-code");
+    expect(result.version).toBe(1);
+    expect(result.path).toEndWith(".md");
+    expect(result.isNew).toBe(true);
+  });
+
   test("increments version number", async () => {
     const slug = `inc-test-${Date.now()}`;
     const v1 = await saveToHistory("test-project", slug, "# V1");

@@ -132,7 +132,8 @@ export async function saveToHistory(
   project: string,
   slug: string,
   plan: string,
-  commitMessage?: string
+  commitMessage?: string,
+  origin?: string
 ): Promise<{ version: number; path: string; isNew: boolean }> {
   const historyDir = await getHistoryDir(project);
   const fileName = `${slug}.md`;
@@ -150,11 +151,22 @@ export async function saveToHistory(
     return { version: prevCount || 1, path: filePath, isNew: false };
   }
 
+  // Map origin to a readable identity
+  let authorName = "Plannotator";
+  if (origin === "claude-code") {
+    authorName = "Claude Code";
+  } else if (origin === "opencode") {
+    authorName = "OpenCode";
+  } else if (origin === "pi") {
+    authorName = "Pi";
+  }
+  const author = `${authorName} <bot@plannotator.ai>`;
+
   // Add and commit
   await $`git add ${fileName}`.cwd(historyDir).quiet();
   
   const msg = commitMessage || `Update plan ${slug} to version ${prevCount + 1}`;
-  await $`git commit -m ${msg}`.cwd(historyDir).quiet().nothrow();
+  await $`git commit --author=${author} -m ${msg}`.cwd(historyDir).quiet().nothrow();
 
   const newCount = await getVersionCount(project, slug);
   return { version: newCount, path: filePath, isNew: true };

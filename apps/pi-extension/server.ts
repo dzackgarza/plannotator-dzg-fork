@@ -156,6 +156,7 @@ function saveToHistory(
   slug: string,
   plan: string,
   commitMessage?: string,
+  origin?: string,
 ): { version: number; path: string; isNew: boolean } {
   const historyDir = getHistoryDir(project);
   const fileName = `${slug}.md`;
@@ -171,9 +172,20 @@ function saveToHistory(
       return { version: prevCount || 1, path: filePath, isNew: false };
     }
 
+    // Map origin to a readable identity
+    let authorName = "Plannotator";
+    if (origin === "claude-code") {
+      authorName = "Claude Code";
+    } else if (origin === "opencode") {
+      authorName = "OpenCode";
+    } else if (origin === "pi") {
+      authorName = "Pi";
+    }
+    const author = `${authorName} <bot@plannotator.ai>`;
+
     execFileSync("git", ["add", fileName], { cwd: historyDir, stdio: "ignore" });
     const msg = commitMessage || `Update plan ${slug} to version ${prevCount + 1}`;
-    execFileSync("git", ["commit", "-m", msg], { cwd: historyDir, stdio: "ignore" });
+    execFileSync("git", ["commit", `--author=${author}`, "-m", msg], { cwd: historyDir, stdio: "ignore" });
   } catch (err) {
     console.error("[Plannotator] git commit failed:", err);
   }
@@ -289,7 +301,7 @@ export function startPlanReviewServer(options: {
   // Version history
   const slug = generateSlug(options.plan);
   const project = detectProjectName();
-  const historyResult = saveToHistory(project, slug, options.plan, options.commitMessage);
+  const historyResult = saveToHistory(project, slug, options.plan, options.commitMessage, options.origin);
   const previousPlan =
     historyResult.version > 1
       ? getPlanVersion(project, slug, historyResult.version - 1)
