@@ -266,9 +266,7 @@ if (args[0] === "sessions") {
   const result = await server.waitForDecision();
 
   // Output feedback (captured by slash command)
-  const feedbackText = result.feedback || "No feedback provided.";
-  const resubmitInstruction = `\n\nWhen you have addressed this feedback, resubmit the updated document for annotation by running the /plannotator-annotate command again with the same file path.`;
-  console.log(feedbackText + resubmitInstruction);
+  console.log(result.feedback || "No feedback provided.");
 
   // Stop the server after flushing the response to the browser.
   setTimeout(() => { server.stop(); process.exit(0); }, 5000);

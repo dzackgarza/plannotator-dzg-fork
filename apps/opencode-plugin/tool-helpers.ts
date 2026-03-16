@@ -117,20 +117,25 @@ File: ${filePath}
 
 ${feedback}
 
-## Instructions for Addressing Feedback
+## Mandatory workflow — follow in order, do not skip steps
 
-Before making any edits:
-1. Read all feedback items carefully and identify exactly what needs to change.
-2. Research any open questions raised by the feedback before writing.
-3. Plan how each feedback item will be addressed — write out your edit plan before touching any file.
-4. Determine if any items require further clarification or information you do not yet have.
+**Step 1 — Read and triage all feedback before touching anything.**
+Read every feedback item. For each one, determine:
+- Exactly what text needs to change and where.
+- Whether the item requires research or outside information before you can address it correctly. If so, do that research now, before editing.
+- Whether the item is ambiguous or underspecified. If so, resolve the ambiguity (ask, research, or make a justified decision) before editing.
 
-When editing:
-- Use targeted edit tools to make surgical, minimal changes. Do NOT rewrite the entire file.
-- Address only what the feedback explicitly requests — avoid scope creep.
-- Prefer the smallest diff that fully resolves each feedback item.
+**Step 2 — Write out your edit plan.**
+Before opening any file for editing, produce an explicit plan: for each feedback item, state what you will change, why, and which lines or sections are affected. Do not begin editing until this plan is complete.
 
-When done, call \`plannotator_annotate\` again with the same file path to resubmit for review.`;
+**Step 3 — Make targeted, surgical edits using edit tools.**
+Use edit tools (not write/overwrite tools) to apply each change as a minimal, targeted diff.
+- Never rewrite or regenerate the entire file. If you find yourself replacing the whole file, stop — that is wrong.
+- Touch only the lines required to address the feedback. Leave everything else unchanged.
+- One feedback item at a time; verify each change before moving to the next.
+
+**Step 4 — Resubmit for annotation.**
+When all feedback items have been addressed, call \`plannotator_annotate\` again with the same file path so the user can review the updated document.`;
 }
 
 function buildReviewToolResponse(url: string, diffType: ReviewToolDiffType): string {

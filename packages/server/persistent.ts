@@ -746,11 +746,12 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/shutdown" && req.method === "POST") {
-        setTimeout(() => {
-          unregisterSession(process.pid);
-          server.stop();
-          process.exit(0);
-        }, 10);
+        // Persistent server stays alive — just clear the current session so the
+        // next tool invocation can submit a new one without restarting the process.
+        if (currentSession) {
+          deleteDraft(currentSession.draftKey);
+          currentSession = null;
+        }
         return Response.json({ ok: true });
       }
 
