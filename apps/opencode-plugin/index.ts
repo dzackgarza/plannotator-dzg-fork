@@ -133,8 +133,7 @@ async function startReviewServerHTTP(
     );
   }
 
-  const { sessionId, url: serverUrl, port } = (await resp.json()) as {
-    sessionId: string;
+  const { url: serverUrl, port } = (await resp.json()) as {
     url: string;
     port: number;
   };
@@ -147,7 +146,7 @@ async function startReviewServerHTTP(
     url: serverUrl,
     isRemote: remote,
     waitForDecision: () =>
-      fetch(`${SERVER_URL}/api/session/${sessionId}/wait`).then(
+      fetch(`${SERVER_URL}/api/wait`).then(
         (r) => r.json()
       ) as Promise<ReviewDecision>,
     stop: () => {},
@@ -179,8 +178,7 @@ async function startAnnotateServerHTTP(
     );
   }
 
-  const { sessionId, url: serverUrl, port } = (await resp.json()) as {
-    sessionId: string;
+  const { url: serverUrl, port } = (await resp.json()) as {
     url: string;
     port: number;
   };
@@ -193,7 +191,7 @@ async function startAnnotateServerHTTP(
     url: serverUrl,
     isRemote: remote,
     waitForDecision: () =>
-      fetch(`${SERVER_URL}/api/session/${sessionId}/wait`).then(
+      fetch(`${SERVER_URL}/api/wait`).then(
         (r) => r.json()
       ) as Promise<AnnotateDecision>,
     stop: () => {},
@@ -406,11 +404,9 @@ Do NOT proceed with implementation until your plan is approved.
           }
 
           const {
-            sessionId,
             url: serverUrl,
             port,
           } = (await resp.json()) as {
-            sessionId: string;
             url: string;
             port: number;
           };
@@ -432,13 +428,11 @@ Do NOT proceed with implementation until your plan is approved.
 
           let result: PlanDecision;
           if (timeoutSeconds === null) {
-            const r = await fetch(
-              `${SERVER_URL}/api/session/${sessionId}/wait`
-            );
+            const r = await fetch(`${SERVER_URL}/api/wait`);
             result = (await r.json()) as PlanDecision;
           } else {
             const r = await fetch(
-              `${SERVER_URL}/api/session/${sessionId}/wait`,
+              `${SERVER_URL}/api/wait`,
               { signal: AbortSignal.timeout(timeoutSeconds * 1000) }
             ).catch((err) => {
               if (err.name === "TimeoutError" || err.name === "AbortError")

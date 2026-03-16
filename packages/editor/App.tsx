@@ -78,6 +78,7 @@ const App: React.FC = () => {
   const [annotateMode, setAnnotateMode] = useState(false);
   const [imageBaseDir, setImageBaseDir] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
+  const [isIdle, setIsIdle] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<'approved' | 'denied' | 'cancelled' | null>(null);
   const [pendingPasteImage, setPendingPasteImage] = useState<{ file: File; blobUrl: string; initialName: string } | null>(null);
@@ -315,7 +316,13 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: 'claude-code' | 'opencode' | 'pi'; mode?: 'annotate'; filePath?: string; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string } }) => {
+      .then((data: { phase?: 'idle'; plan?: string; origin?: 'claude-code' | 'opencode' | 'pi'; mode?: 'annotate'; filePath?: string; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string } }) => {
+        if (data.phase === 'idle') {
+          // Persistent server is running but no annotation is in progress
+          setIsApiMode(true);
+          setIsIdle(true);
+          return;
+        }
         if (data.plan) setMarkdown(data.plan);
         setIsApiMode(true);
         if (data.mode === 'annotate') {
@@ -475,7 +482,6 @@ const App: React.FC = () => {
         return;
       }
       setSubmitted('cancelled');
-      fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
     } catch {
       setIsSubmitting(false);
     }
@@ -554,8 +560,6 @@ const App: React.FC = () => {
         body: JSON.stringify(body),
       });
       setSubmitted('approved');
-      // Gracefully signal the server to stop now that the flow is complete
-      fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
     } catch {
       setIsSubmitting(false);
     }
@@ -577,7 +581,6 @@ const App: React.FC = () => {
         })
       });
       setSubmitted('denied');
-      fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
     } catch {
       setIsSubmitting(false);
     }
@@ -855,6 +858,17 @@ const App: React.FC = () => {
     const widths: Record<PlanWidth, number> = { compact: 832, default: 1040, wide: 1280 };
     return widths[uiPrefs.planWidth] ?? 832;
   }, [uiPrefs.planWidth]);
+
+  if (isIdle) {
+    return (
+      <ThemeProvider defaultTheme="dark">
+        <div className="h-screen flex flex-col items-center justify-center bg-background text-foreground">
+          <h1 className="text-2xl font-semibold mb-3">Waiting for annotation request</h1>
+          <p className="text-muted-foreground text-sm">Your agent will submit a document for review shortly.</p>
+        </div>
+      </ThemeProvider>
+    );
+  }
 
   return (
     <ThemeProvider defaultTheme="dark">

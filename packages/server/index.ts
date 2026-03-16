@@ -171,7 +171,6 @@ export async function startPlannotatorServer(
   process.on("SIGTERM", handleSignal);
 
   // Cleanup: unregister signal handlers and stop the server.
-  // Used by both /api/shutdown (in-request path) and the returned stop() method.
   const cleanup = () => {
     process.off("SIGINT", handleSignal);
     process.off("SIGTERM", handleSignal);
@@ -483,12 +482,6 @@ export async function startPlannotatorServer(
           // API: Reset annotations
           if (url.pathname === "/api/reset" && req.method === "POST") {
             deleteDraft(draftKey);
-            return Response.json({ ok: true });
-          }
-
-          // API: Explicitly cancel and shutdown the server
-          if (url.pathname === "/api/shutdown" && req.method === "POST") {
-            setTimeout(cleanup, 10);
             return Response.json({ ok: true });
           }
 

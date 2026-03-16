@@ -69,34 +69,19 @@ async function cmdStart(): Promise<void> {
 }
 
 async function cmdStop(): Promise<void> {
-  const port = getPort();
-
-  // Try graceful HTTP shutdown first
-  try {
-    const resp = await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
-      method: "POST",
-      signal: AbortSignal.timeout(3000),
-    });
-    if (resp.ok) {
-      console.log("Plannotator server stopped.");
-      process.exit(0);
-    }
-  } catch {}
-
-  // Fall back to SIGTERM via session registry
   const sessions = listSessions();
-  const session = sessions.find((s) => s.port === port);
-  if (session) {
-    try {
-      process.kill(session.pid, "SIGTERM");
-      unregisterSession(session.pid);
-      console.log(`Stopped Plannotator server (pid ${session.pid}).`);
-    } catch (e) {
-      console.error(`Failed to stop server: ${e}`);
-      process.exit(1);
-    }
-  } else {
+  const session = sessions.find((s) => s.port === getPort());
+  if (!session) {
     console.log("No running Plannotator server found.");
+    return;
+  }
+  try {
+    process.kill(session.pid, "SIGTERM");
+    unregisterSession(session.pid);
+    console.log(`Stopped Plannotator server (pid ${session.pid}).`);
+  } catch (e) {
+    console.error(`Failed to stop server: ${e}`);
+    process.exit(1);
   }
 }
 
@@ -106,12 +91,12 @@ async function cmdStatus(): Promise<void> {
   if (await healthCheck(port)) {
     const resp = await fetch(`http://127.0.0.1:${port}/api/health`);
     const data = (await resp.json()) as {
-      status: string;
-      sessionType?: string;
+      phase: string;
+      type?: string;
     };
     console.log(`Running at http://localhost:${port}`);
     console.log(
-      `Status: ${data.status}${data.sessionType ? ` (${data.sessionType})` : ""}`
+      `Phase: ${data.phase}${data.type ? ` (${data.type})` : ""}`
     );
   } else {
     console.log("Not running.");

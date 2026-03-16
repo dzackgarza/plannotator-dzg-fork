@@ -145,29 +145,31 @@ export interface PersistentServerHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Internal active-session state
+// Internal phase state
 // ---------------------------------------------------------------------------
 
-interface ActiveSession {
-  id: string;
-  submission: SessionSubmission;
-  draftKey: string;
-  editorAnnotations: ReturnType<typeof createEditorAnnotationHandler>;
-  resolve: (decision: AnyDecision) => void;
-  promise: Promise<AnyDecision>;
-  // Plan-specific derived state (populated during POST /api/session)
-  slug?: string;
-  project?: string;
-  versionInfo?: { version: number; totalVersions: number; project: string };
-  currentPlanPath?: string;
-  repoInfo?: Awaited<ReturnType<typeof getRepoInfo>>;
-  previousPlan?: string | null;
-  // Review-specific mutable state
-  currentPatch?: string;
-  currentGitRef?: string;
-  currentDiffType?: DiffType;
-  currentError?: string;
-}
+type ServerPhase =
+  | { phase: "idle" }
+  | {
+      phase: "annotating";
+      submission: SessionSubmission;
+      draftKey: string;
+      editorAnnotations: ReturnType<typeof createEditorAnnotationHandler>;
+      resolve: (decision: AnyDecision) => void;
+      promise: Promise<AnyDecision>;
+      // Plan-specific derived state (populated during POST /api/session)
+      slug?: string;
+      project?: string;
+      versionInfo?: { version: number; totalVersions: number; project: string };
+      currentPlanPath?: string;
+      repoInfo?: Awaited<ReturnType<typeof getRepoInfo>>;
+      previousPlan?: string | null;
+      // Review-specific mutable state
+      currentPatch?: string;
+      currentGitRef?: string;
+      currentDiffType?: DiffType;
+      currentError?: string;
+    };
 
 // ---------------------------------------------------------------------------
 // Server factory
@@ -185,7 +187,7 @@ export function startPersistentServer(
       ? parseInt(process.env.PLANNOTATOR_PORT, 10)
       : PERSISTENT_SERVER_DEFAULT_PORT);
 
-  let currentSession: ActiveSession | null = null;
+  let serverPhase: ServerPhase = { phase: "idle" };
 
   const server = Bun.serve({
     port,
@@ -196,16 +198,22 @@ export function startPersistentServer(
       // ── Health check ───────────────────────────────────────────────────────
       if (url.pathname === "/api/health" && req.method === "GET") {
         return Response.json({
-          status: currentSession ? "pending" : "idle",
-          sessionType: currentSession?.submission.type ?? null,
+          phase: serverPhase.phase,
+          ...(serverPhase.phase === "annotating" && {
+            type: serverPhase.submission.type,
+          }),
         });
       }
 
       // ── Submit new session ─────────────────────────────────────────────────
       if (url.pathname === "/api/session" && req.method === "POST") {
-        if (currentSession) {
+        if (serverPhase.phase === "annotating") {
           return Response.json(
-            { error: "Server is busy with another session" },
+            {
+              error:
+                "An annotation is already in progress. Open the review UI to submit feedback or cancel before starting a new annotation.",
+              url: `http://localhost:${server.port}`,
+            },
             { status: 409 }
           );
         }
@@ -217,7 +225,6 @@ export function startPersistentServer(
           return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
 
-        const sessionId = crypto.randomUUID();
         let resolve!: (decision: AnyDecision) => void;
         const promise = new Promise<AnyDecision>((r) => {
           resolve = r;
@@ -230,8 +237,8 @@ export function startPersistentServer(
               ? contentHash(submission.data.rawPatch ?? "")
               : contentHash(submission.data.markdown);
 
-        currentSession = {
-          id: sessionId,
+        serverPhase = {
+          phase: "annotating",
           submission,
           draftKey,
           editorAnnotations: createEditorAnnotationHandler(),
@@ -264,57 +271,57 @@ export function startPersistentServer(
           const totalVersions = await getVersionCount(project, slug).catch(
             () => 1
           );
-          currentSession.slug = slug;
-          currentSession.project = project;
-          currentSession.currentPlanPath = historyResult.path;
-          currentSession.repoInfo = repoInfo;
-          currentSession.previousPlan = previousPlan;
-          currentSession.versionInfo = {
-            version: historyResult.version,
-            totalVersions,
-            project,
-          };
+          if (serverPhase.phase === "annotating") {
+            serverPhase.slug = slug;
+            serverPhase.project = project;
+            serverPhase.currentPlanPath = historyResult.path;
+            serverPhase.repoInfo = repoInfo;
+            serverPhase.previousPlan = previousPlan;
+            serverPhase.versionInfo = {
+              version: historyResult.version,
+              totalVersions,
+              project,
+            };
+          }
         } else if (submission.type === "review") {
           const d = submission.data;
           const repoInfo = await getRepoInfo(d.cwd).catch(() => undefined);
-          currentSession.repoInfo = repoInfo;
-          currentSession.currentPatch = d.rawPatch;
-          currentSession.currentGitRef = d.gitRef;
-          currentSession.currentDiffType = d.diffType ?? "uncommitted";
-          currentSession.currentError = d.error;
+          if (serverPhase.phase === "annotating") {
+            serverPhase.repoInfo = repoInfo;
+            serverPhase.currentPatch = d.rawPatch;
+            serverPhase.currentGitRef = d.gitRef;
+            serverPhase.currentDiffType = d.diffType ?? "uncommitted";
+            serverPhase.currentError = d.error;
+          }
         } else {
           const repoInfo = await getRepoInfo().catch(() => undefined);
-          currentSession.repoInfo = repoInfo;
+          if (serverPhase.phase === "annotating") {
+            serverPhase.repoInfo = repoInfo;
+          }
         }
 
         return Response.json({
           ok: true,
-          sessionId,
           url: `http://localhost:${server.port}`,
           port: server.port,
         });
       }
 
       // ── Long-poll for decision ─────────────────────────────────────────────
-      if (
-        url.pathname.startsWith("/api/session/") &&
-        url.pathname.endsWith("/wait")
-      ) {
-        const parts = url.pathname.split("/");
-        const sessionId = parts[3];
-        if (!currentSession || currentSession.id !== sessionId) {
-          return Response.json({ error: "Session not found" }, { status: 404 });
+      if (url.pathname === "/api/wait" && req.method === "GET") {
+        if (serverPhase.phase !== "annotating") {
+          return Response.json({ error: "No active annotation" }, { status: 404 });
         }
-        const result = await currentSession.promise;
+        const result = await serverPhase.promise;
         return Response.json(result);
       }
 
       // ── Plan routes ────────────────────────────────────────────────────────
 
       if (url.pathname === "/api/plan" && req.method === "GET") {
-        if (!currentSession)
-          return Response.json({ error: "No active session" }, { status: 404 });
-        const s = currentSession;
+        if (serverPhase.phase !== "annotating")
+          return Response.json({ phase: "idle" });
+        const s = serverPhase;
         if (s.submission.type === "plan") {
           const d = s.submission.data;
           return Response.json({
@@ -345,14 +352,14 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/plan/version" && req.method === "GET") {
-        if (!currentSession || currentSession.submission.type !== "plan")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "plan")
           return Response.json({ error: "No plan session" }, { status: 404 });
         const vParam = url.searchParams.get("v");
         if (!vParam) return new Response("Missing v parameter", { status: 400 });
         const v = parseInt(vParam, 10);
         if (isNaN(v) || v < 1)
           return new Response("Invalid version number", { status: 400 });
-        const { slug, project } = currentSession;
+        const { slug, project } = serverPhase;
         if (!slug || !project)
           return Response.json(
             { error: "Session not initialized" },
@@ -365,9 +372,9 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/plan/versions" && req.method === "GET") {
-        if (!currentSession || currentSession.submission.type !== "plan")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "plan")
           return Response.json({ error: "No plan session" }, { status: 404 });
-        const { slug, project } = currentSession;
+        const { slug, project } = serverPhase;
         if (!slug || !project)
           return Response.json(
             { error: "Session not initialized" },
@@ -381,9 +388,9 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/plan/history" && req.method === "GET") {
-        if (!currentSession || currentSession.submission.type !== "plan")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "plan")
           return Response.json({ error: "No plan session" }, { status: 404 });
-        const { project } = currentSession;
+        const { project } = serverPhase;
         if (!project)
           return Response.json(
             { error: "Session not initialized" },
@@ -396,7 +403,7 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/plan/vscode-diff" && req.method === "POST") {
-        if (!currentSession || currentSession.submission.type !== "plan")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "plan")
           return Response.json({ error: "No plan session" }, { status: 404 });
         try {
           const body = (await req.json()) as { baseVersion: number };
@@ -405,7 +412,7 @@ export function startPersistentServer(
               { error: "Missing baseVersion" },
               { status: 400 }
             );
-          const { slug, project, currentPlanPath } = currentSession;
+          const { slug, project, currentPlanPath } = serverPhase;
           if (!slug || !project || !currentPlanPath)
             return Response.json(
               { error: "Session not initialized" },
@@ -434,10 +441,10 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/approve" && req.method === "POST") {
-        if (!currentSession || currentSession.submission.type !== "plan")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "plan")
           return Response.json({ error: "No plan session" }, { status: 404 });
-        const { slug, project, versionInfo, draftKey } = currentSession;
-        const d = currentSession.submission.data;
+        const { slug, project, versionInfo, draftKey } = serverPhase;
+        const d = serverPhase.submission.data;
         let feedback: string | undefined;
         let agentSwitch: string | undefined;
         let requestedPermissionMode: string | undefined;
@@ -490,9 +497,9 @@ export function startPersistentServer(
         deleteDraft(draftKey);
         const effectivePermissionMode =
           requestedPermissionMode || d.permissionMode;
-        const session = currentSession;
-        currentSession = null;
-        session.resolve({
+        const snap = serverPhase;
+        serverPhase = { phase: "idle" };
+        if (snap.phase === "annotating") snap.resolve({
           approved: true,
           feedback,
           savedPath,
@@ -503,10 +510,10 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/deny" && req.method === "POST") {
-        if (!currentSession || currentSession.submission.type !== "plan")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "plan")
           return Response.json({ error: "No plan session" }, { status: 404 });
-        const { slug, project, versionInfo, draftKey } = currentSession;
-        const d = currentSession.submission.data;
+        const { slug, project, versionInfo, draftKey } = serverPhase;
+        const d = serverPhase.submission.data;
         let feedback = "Plan rejected by user";
         let planSaveEnabled = true;
         let planSaveCustomPath: string | undefined;
@@ -545,16 +552,16 @@ export function startPersistentServer(
         }
 
         deleteDraft(draftKey);
-        const session = currentSession;
-        currentSession = null;
-        session.resolve({ approved: false, feedback, savedPath });
+        const snap2 = serverPhase;
+        serverPhase = { phase: "idle" };
+        if (snap2.phase === "annotating") snap2.resolve({ approved: false, feedback, savedPath });
         return Response.json({ ok: true, savedPath });
       }
 
       // ── Review routes ──────────────────────────────────────────────────────
 
       if (url.pathname === "/api/diff" && req.method === "GET") {
-        if (!currentSession || currentSession.submission.type !== "review")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "review")
           return Response.json({ error: "No review session" }, { status: 404 });
         const {
           currentPatch,
@@ -562,8 +569,8 @@ export function startPersistentServer(
           currentDiffType,
           currentError,
           repoInfo,
-        } = currentSession;
-        const d = currentSession.submission.data;
+        } = serverPhase;
+        const d = serverPhase.submission.data;
         return Response.json({
           rawPatch: currentPatch,
           gitRef: currentGitRef,
@@ -578,7 +585,7 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/diff/switch" && req.method === "POST") {
-        if (!currentSession || currentSession.submission.type !== "review")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "review")
           return Response.json({ error: "No review session" }, { status: 404 });
         try {
           const body = (await req.json()) as { diffType: DiffType };
@@ -587,19 +594,19 @@ export function startPersistentServer(
               { error: "Missing diffType" },
               { status: 400 }
             );
-          const d = currentSession.submission.data;
+          const d = serverPhase.submission.data;
           const defaultBranch = d.gitContext?.defaultBranch || "main";
           const result = await runGitDiff(body.diffType, defaultBranch, d.cwd);
-          currentSession.currentPatch = result.patch;
-          currentSession.currentGitRef = result.label;
-          currentSession.currentDiffType = body.diffType;
-          currentSession.currentError = result.error;
+          serverPhase.currentPatch = result.patch;
+          serverPhase.currentGitRef = result.label;
+          serverPhase.currentDiffType = body.diffType;
+          serverPhase.currentError = result.error;
           return Response.json({
-            rawPatch: currentSession.currentPatch,
-            gitRef: currentSession.currentGitRef,
-            diffType: currentSession.currentDiffType,
-            ...(currentSession.currentError && {
-              error: currentSession.currentError,
+            rawPatch: serverPhase.currentPatch,
+            gitRef: serverPhase.currentGitRef,
+            diffType: serverPhase.currentDiffType,
+            ...(serverPhase.currentError && {
+              error: serverPhase.currentError,
             }),
           });
         } catch (err) {
@@ -611,7 +618,7 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/file-content" && req.method === "GET") {
-        if (!currentSession || currentSession.submission.type !== "review")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "review")
           return Response.json({ error: "No review session" }, { status: 404 });
         const filePath = url.searchParams.get("path");
         if (!filePath)
@@ -629,10 +636,10 @@ export function startPersistentServer(
             return Response.json({ error: "Invalid path" }, { status: 400 });
           }
         }
-        const d = currentSession.submission.data;
+        const d = serverPhase.submission.data;
         const defaultBranch = d.gitContext?.defaultBranch || "main";
         const result = await getFileContentsForDiff(
-          currentSession.currentDiffType ?? "uncommitted",
+          serverPhase.currentDiffType ?? "uncommitted",
           defaultBranch,
           filePath,
           oldPath,
@@ -642,7 +649,7 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/git-add" && req.method === "POST") {
-        if (!currentSession || currentSession.submission.type !== "review")
+        if (serverPhase.phase !== "annotating" || serverPhase.submission.type !== "review")
           return Response.json({ error: "No review session" }, { status: 404 });
         try {
           const body = (await req.json()) as {
@@ -654,9 +661,9 @@ export function startPersistentServer(
               { error: "Missing filePath" },
               { status: 400 }
             );
-          const d = currentSession.submission.data;
+          const d = serverPhase.submission.data;
           let cwd = d.cwd;
-          const dt = currentSession.currentDiffType;
+          const dt = serverPhase.currentDiffType;
           if (dt?.startsWith("worktree:")) {
             const parsed = parseWorktreeDiffType(dt as DiffType);
             if (parsed) cwd = parsed.path;
@@ -675,9 +682,9 @@ export function startPersistentServer(
       // ── Common feedback / cancel routes ────────────────────────────────────
 
       if (url.pathname === "/api/feedback" && req.method === "POST") {
-        if (!currentSession)
+        if (serverPhase.phase !== "annotating")
           return Response.json({ error: "No active session" }, { status: 404 });
-        const { draftKey } = currentSession;
+        const { draftKey } = serverPhase;
         try {
           const body = (await req.json()) as {
             feedback?: string;
@@ -686,20 +693,22 @@ export function startPersistentServer(
             agentSwitch?: string;
           };
           deleteDraft(draftKey);
-          const session = currentSession;
-          currentSession = null;
-          if (session.submission.type === "review") {
-            session.resolve({
-              approved: body.approved ?? false,
-              feedback: body.feedback ?? "",
-              annotations: body.annotations ?? [],
-              agentSwitch: body.agentSwitch,
-            });
-          } else {
-            session.resolve({
-              feedback: body.feedback ?? "",
-              annotations: body.annotations ?? [],
-            });
+          const snap3 = serverPhase;
+          serverPhase = { phase: "idle" };
+          if (snap3.phase === "annotating") {
+            if (snap3.submission.type === "review") {
+              snap3.resolve({
+                approved: body.approved ?? false,
+                feedback: body.feedback ?? "",
+                annotations: body.annotations ?? [],
+                agentSwitch: body.agentSwitch,
+              });
+            } else {
+              snap3.resolve({
+                feedback: body.feedback ?? "",
+                annotations: body.annotations ?? [],
+              });
+            }
           }
           return Response.json({ ok: true });
         } catch (err) {
@@ -711,47 +720,39 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/cancel" && req.method === "POST") {
-        if (currentSession) {
-          const { draftKey, submission } = currentSession;
+        if (serverPhase.phase === "annotating") {
+          const { draftKey, submission } = serverPhase;
           deleteDraft(draftKey);
-          const session = currentSession;
-          currentSession = null;
-          if (submission.type === "plan") {
-            session.resolve({
-              approved: false,
-              feedback: "Review cancelled by user.",
-              cancelled: true,
-            });
-          } else if (submission.type === "review") {
-            session.resolve({
-              approved: false,
-              feedback: "Review cancelled by user.",
-              annotations: [],
-              cancelled: true,
-            });
-          } else {
-            session.resolve({
-              feedback: "Annotation cancelled by user.",
-              annotations: [],
-              cancelled: true,
-            });
+          const snap4 = serverPhase;
+          serverPhase = { phase: "idle" };
+          if (snap4.phase === "annotating") {
+            if (submission.type === "plan") {
+              snap4.resolve({
+                approved: false,
+                feedback: "Review cancelled by user.",
+                cancelled: true,
+              });
+            } else if (submission.type === "review") {
+              snap4.resolve({
+                approved: false,
+                feedback: "Review cancelled by user.",
+                annotations: [],
+                cancelled: true,
+              });
+            } else {
+              snap4.resolve({
+                feedback: "Annotation cancelled by user.",
+                annotations: [],
+                cancelled: true,
+              });
+            }
           }
         }
         return Response.json({ ok: true });
       }
 
       if (url.pathname === "/api/reset" && req.method === "POST") {
-        if (currentSession) deleteDraft(currentSession.draftKey);
-        return Response.json({ ok: true });
-      }
-
-      if (url.pathname === "/api/shutdown" && req.method === "POST") {
-        // Persistent server stays alive — just clear the current session so the
-        // next tool invocation can submit a new one without restarting the process.
-        if (currentSession) {
-          deleteDraft(currentSession.draftKey);
-          currentSession = null;
-        }
+        if (serverPhase.phase === "annotating") deleteDraft(serverPhase.draftKey);
         return Response.json({ ok: true });
       }
 
@@ -764,13 +765,14 @@ export function startPersistentServer(
 
       if (url.pathname === "/api/doc" && req.method === "GET") {
         if (
-          currentSession?.submission.type === "annotate" &&
+          serverPhase.phase === "annotating" &&
+          serverPhase.submission.type === "annotate" &&
           !url.searchParams.has("base")
         ) {
           const docUrl = new URL(req.url);
           docUrl.searchParams.set(
             "base",
-            dirname(currentSession.submission.data.filePath)
+            dirname(serverPhase.submission.data.filePath)
           );
           return handleDoc(new Request(docUrl.toString()));
         }
@@ -778,9 +780,9 @@ export function startPersistentServer(
       }
 
       if (url.pathname === "/api/draft") {
-        if (!currentSession)
+        if (serverPhase.phase !== "annotating")
           return Response.json({ error: "No active session" }, { status: 404 });
-        const { draftKey } = currentSession;
+        const { draftKey } = serverPhase;
         if (req.method === "POST") return handleDraftSave(req, draftKey);
         if (req.method === "DELETE") return handleDraftDelete(draftKey);
         return handleDraftLoad(draftKey);
@@ -832,17 +834,19 @@ export function startPersistentServer(
       }
 
       // Editor annotations (VS Code extension)
-      if (currentSession) {
-        const editorResponse = await currentSession.editorAnnotations.handle(
+      if (serverPhase.phase === "annotating") {
+        const editorResponse = await serverPhase.editorAnnotations.handle(
           req,
           url
         );
         if (editorResponse) return editorResponse;
       }
 
-      // SPA catch-all: serve HTML based on current session type
+      // SPA catch-all: serve planHtml regardless of phase (UI handles idle state)
       const html =
-        currentSession?.submission.type === "review" ? reviewHtml : planHtml;
+        serverPhase.phase === "annotating" && serverPhase.submission.type === "review"
+          ? reviewHtml
+          : planHtml;
       return new Response(html, { headers: { "Content-Type": "text/html" } });
     },
   });

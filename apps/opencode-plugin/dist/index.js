@@ -536,7 +536,25 @@ File: ${filePath}
 
 ${feedback}
 
-Please address the annotation feedback above. When done, resubmit the updated document for annotation by calling \`plannotator_annotate\` again with the same file path.`;
+## Mandatory workflow \u2014 follow in order, do not skip steps
+
+**Step 1 \u2014 Read and triage all feedback before touching anything.**
+Read every feedback item. For each one, determine:
+- Exactly what text needs to change and where.
+- Whether the item requires research or outside information before you can address it correctly. If so, do that research now, before editing.
+- Whether the item is ambiguous or underspecified. If so, resolve the ambiguity (ask, research, or make a justified decision) before editing.
+
+**Step 2 \u2014 Write out your edit plan.**
+Before opening any file for editing, produce an explicit plan: for each feedback item, state what you will change, why, and which lines or sections are affected. Do not begin editing until this plan is complete.
+
+**Step 3 \u2014 Make targeted, surgical edits using edit tools.**
+Use edit tools (not write/overwrite tools) to apply each change as a minimal, targeted diff.
+- Never rewrite or regenerate the entire file. If you find yourself replacing the whole file, stop \u2014 that is wrong.
+- Touch only the lines required to address the feedback. Leave everything else unchanged.
+- One feedback item at a time; verify each change before moving to the next.
+
+**Step 4 \u2014 Resubmit for annotation.**
+When all feedback items have been addressed, call \`plannotator_annotate\` again with the same file path so the user can review the updated document.`;
 }
 function buildReviewToolResponse(url, diffType) {
   return `Started code review server at ${url}
@@ -745,7 +763,7 @@ async function startReviewServerHTTP(options) {
     const err = await resp.json().catch(() => ({}));
     throw new Error(`Failed to submit review session: ${err.error ?? resp.statusText}`);
   }
-  const { sessionId, url: serverUrl, port } = await resp.json();
+  const { url: serverUrl, port } = await resp.json();
   const remote = isRemoteSession();
   if (options.onReady)
     options.onReady(serverUrl, remote, port);
@@ -753,7 +771,7 @@ async function startReviewServerHTTP(options) {
     port,
     url: serverUrl,
     isRemote: remote,
-    waitForDecision: () => fetch(`${SERVER_URL}/api/session/${sessionId}/wait`).then((r) => r.json()),
+    waitForDecision: () => fetch(`${SERVER_URL}/api/wait`).then((r) => r.json()),
     stop: () => {}
   };
 }
@@ -776,7 +794,7 @@ async function startAnnotateServerHTTP(options) {
     const err = await resp.json().catch(() => ({}));
     throw new Error(`Failed to submit annotate session: ${err.error ?? resp.statusText}`);
   }
-  const { sessionId, url: serverUrl, port } = await resp.json();
+  const { url: serverUrl, port } = await resp.json();
   const remote = isRemoteSession();
   if (options.onReady)
     options.onReady(serverUrl, remote, port);
@@ -784,7 +802,7 @@ async function startAnnotateServerHTTP(options) {
     port,
     url: serverUrl,
     isRemote: remote,
-    waitForDecision: () => fetch(`${SERVER_URL}/api/session/${sessionId}/wait`).then((r) => r.json()),
+    waitForDecision: () => fetch(`${SERVER_URL}/api/wait`).then((r) => r.json()),
     stop: () => {}
   };
 }
@@ -942,7 +960,6 @@ Do NOT proceed with implementation until your plan is approved.
             return `[Plannotator] Failed to submit plan: ${err.error ?? resp.statusText}`;
           }
           const {
-            sessionId,
             url: serverUrl,
             port
           } = await resp.json();
@@ -954,10 +971,10 @@ Do NOT proceed with implementation until your plan is approved.
           const timeoutSeconds = getPlanTimeoutSeconds();
           let result;
           if (timeoutSeconds === null) {
-            const r = await fetch(`${SERVER_URL}/api/session/${sessionId}/wait`);
+            const r = await fetch(`${SERVER_URL}/api/wait`);
             result = await r.json();
           } else {
-            const r = await fetch(`${SERVER_URL}/api/session/${sessionId}/wait`, { signal: AbortSignal.timeout(timeoutSeconds * 1000) }).catch((err) => {
+            const r = await fetch(`${SERVER_URL}/api/wait`, { signal: AbortSignal.timeout(timeoutSeconds * 1000) }).catch((err) => {
               if (err.name === "TimeoutError" || err.name === "AbortError")
                 return null;
               throw err;

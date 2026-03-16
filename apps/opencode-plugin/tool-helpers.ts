@@ -214,8 +214,7 @@ async function forwardReviewFeedbackInBackground(
     } catch {
       // Session may not be available once the review completes.
     } finally {
-      // Graceful shutdown happens via /api/shutdown from the UI
-      // This is a fallback to ensure the server eventually stops
+      // Fallback: stop ephemeral server after decision
       setTimeout(() => server.stop(), 10000);
     }
   })();
@@ -261,8 +260,7 @@ async function forwardAnnotateFeedbackInBackground(
     } catch {
       // Session may not be available once annotation completes.
     } finally {
-      // Graceful shutdown happens via /api/shutdown from the UI
-      // This is a fallback to ensure the server eventually stops
+      // Fallback: stop ephemeral server after decision
       setTimeout(() => server.stop(), 10000);
     }
   })();
