@@ -111,7 +111,7 @@ function buildAnnotateFeedbackMessage(
   filePath: string,
   feedback: string,
 ): string {
-  return `# Markdown Annotations\n\nFile: ${filePath}\n\n${feedback}\n\nPlease address the annotation feedback above.`;
+  return `# Markdown Annotations\n\nFile: ${filePath}\n\n${feedback}\n\nPlease address the annotation feedback above. When done, resubmit the updated document for annotation by calling \`plannotator_annotate\` again with the same file path.`;
 }
 
 function buildReviewToolResponse(url: string, diffType: ReviewToolDiffType): string {
