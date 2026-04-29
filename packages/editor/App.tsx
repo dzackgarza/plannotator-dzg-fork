@@ -3,7 +3,6 @@ import { parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, e
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { ExportModal } from '@plannotator/ui/components/ExportModal';
-import { ImportModal } from '@plannotator/ui/components/ImportModal';
 import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Annotation, Block, EditorMode, type InputMethod, type ImageAttachment } from '@plannotator/ui/types';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
@@ -12,7 +11,6 @@ import { AnnotationToolstrip } from '@plannotator/ui/components/AnnotationToolst
 import { TaterSpriteRunning } from '@plannotator/ui/components/TaterSpriteRunning';
 import { TaterSpritePullup } from '@plannotator/ui/components/TaterSpritePullup';
 import { Settings } from '@plannotator/ui/components/Settings';
-import { useSharing } from '@plannotator/ui/hooks/useSharing';
 import { useAgents } from '@plannotator/ui/hooks/useAgents';
 import { useActiveSection } from '@plannotator/ui/hooks/useActiveSection';
 import { storage } from '@plannotator/ui/utils/storage';
@@ -58,7 +56,6 @@ const App: React.FC = () => {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [frontmatter, setFrontmatter] = useState<Frontmatter | null>(null);
   const [showExport, setShowExport] = useState(false);
-  const [showImport, setShowImport] = useState(false);
   const [showFeedbackPrompt, setShowFeedbackPrompt] = useState(false);
   const [showClaudeCodeWarning, setShowClaudeCodeWarning] = useState(false);
   const [showAgentWarning, setShowAgentWarning] = useState(false);
@@ -73,7 +70,7 @@ const App: React.FC = () => {
   });
   const [uiPrefs, setUiPrefs] = useState(() => getUIPreferences());
   const [isApiMode, setIsApiMode] = useState(false);
-  const [origin, setOrigin] = useState<'claude-code' | 'opencode' | 'pi' | null>(null);
+  const [origin, setOrigin] = useState<'claude-code' | 'opencode' | null>(null);
   const [globalAttachments, setGlobalAttachments] = useState<ImageAttachment[]>([]);
   const [annotateMode, setAnnotateMode] = useState(false);
   const [imageBaseDir, setImageBaseDir] = useState<string | undefined>(undefined);
@@ -83,12 +80,9 @@ const App: React.FC = () => {
   const [pendingPasteImage, setPendingPasteImage] = useState<{ file: File; blobUrl: string; initialName: string } | null>(null);
   const [showPermissionModeSetup, setShowPermissionModeSetup] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
-  const [sharingEnabled, setSharingEnabled] = useState(true);
-  const [shareBaseUrl, setShareBaseUrl] = useState<string | undefined>(undefined);
-  const [pasteApiUrl, setPasteApiUrl] = useState<string | undefined>(undefined);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
   const [showExportDropdown, setShowExportDropdown] = useState(false);
-  const [initialExportTab, setInitialExportTab] = useState<'share' | 'annotations' | 'notes'>();
+  const [initialExportTab, setInitialExportTab] = useState<'annotations' | 'notes'>();
   const [noteSaveToast, setNoteSaveToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   // Plan diff state
   const [isPlanDiffActive, setIsPlanDiffActive] = useState(false);
@@ -215,43 +209,11 @@ const App: React.FC = () => {
   const headingCount = useMemo(() => blocks.filter(b => b.type === 'heading').length, [blocks]);
   const activeSection = useActiveSection(containerRef, headingCount);
 
-  // URL-based sharing
-  const {
-    isSharedSession,
-    isLoadingShared,
-    shareUrl,
-    shareUrlSize,
-    shortShareUrl,
-    isGeneratingShortUrl,
-    shortUrlError,
-    pendingSharedAnnotations,
-    sharedGlobalAttachments,
-    clearPendingSharedAnnotations,
-    generateShortUrl,
-    importFromShareUrl,
-    shareLoadError,
-    clearShareLoadError,
-  } = useSharing(
-    markdown,
-    annotations,
-    globalAttachments,
-    setMarkdown,
-    setAnnotations,
-    setGlobalAttachments,
-    () => {
-      // When loaded from share, mark as loaded
-      setIsLoading(false);
-    },
-    shareBaseUrl,
-    pasteApiUrl
-  );
-
   // Auto-save annotation drafts
   const { draftBanner, restoreDraft, dismissDraft } = useAnnotationDraft({
     annotations,
     globalAttachments,
     isApiMode,
-    isSharedSession,
     submitted: !!submitted,
   });
 
@@ -272,20 +234,6 @@ const App: React.FC = () => {
   // Fetch available agents for OpenCode (for validation on approve)
   const { agents: availableAgents, validateAgent, getAgentWarning } = useAgents(origin);
 
-  // Apply shared annotations to DOM after they're loaded
-  useEffect(() => {
-    if (pendingSharedAnnotations && pendingSharedAnnotations.length > 0) {
-      // Small delay to ensure DOM is rendered
-      const timer = setTimeout(() => {
-        // Clear existing highlights first (important when loading new share URL)
-        viewerRef.current?.clearAllHighlights();
-        viewerRef.current?.applySharedAnnotations(pendingSharedAnnotations);
-        clearPendingSharedAnnotations();
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [pendingSharedAnnotations, clearPendingSharedAnnotations]);
-
   const handleTaterModeChange = (enabled: boolean) => {
     setTaterMode(enabled);
     storage.setItem('plannotator-tater-mode', String(enabled));
@@ -305,17 +253,13 @@ const App: React.FC = () => {
   useInputMethodSwitch(inputMethod, handleInputMethodChange);
 
   // Check if we're in API mode (served from Bun hook server)
-  // Skip if we loaded from a shared URL
   useEffect(() => {
-    if (isLoadingShared) return; // Wait for share check to complete
-    if (isSharedSession) return; // Already loaded from share
-
     fetch('/api/plan')
       .then(res => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: 'claude-code' | 'opencode' | 'pi'; mode?: 'annotate'; filePath?: string; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string } }) => {
+      .then((data: { plan: string; origin?: 'claude-code' | 'opencode'; mode?: 'annotate'; filePath?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string } }) => {
         if (data.plan) setMarkdown(data.plan);
         setIsApiMode(true);
         if (data.mode === 'annotate') {
@@ -323,15 +267,6 @@ const App: React.FC = () => {
         }
         if (data.filePath) {
           setImageBaseDir(data.filePath.replace(/\/[^/]+$/, ''));
-        }
-        if (data.sharingEnabled !== undefined) {
-          setSharingEnabled(data.sharingEnabled);
-        }
-        if (data.shareBaseUrl) {
-          setShareBaseUrl(data.shareBaseUrl);
-        }
-        if (data.pasteApiUrl) {
-          setPasteApiUrl(data.pasteApiUrl);
         }
         if (data.repoInfo) {
           setRepoInfo(data.repoInfo);
@@ -358,7 +293,7 @@ const App: React.FC = () => {
         setIsApiMode(false);
       })
       .finally(() => setIsLoading(false));
-  }, [isLoadingShared, isSharedSession]);
+  }, []);
 
   useEffect(() => {
     const { frontmatter: fm } = extractFrontmatter(markdown);
@@ -369,7 +304,7 @@ const App: React.FC = () => {
   // Auto-save to Obsidian on plan arrival (if enabled)
   const autoSaveAttempted = useRef(false);
   useEffect(() => {
-    if (!isApiMode || !markdown || isSharedSession || annotateMode) return;
+    if (!isApiMode || !markdown || annotateMode) return;
     if (autoSaveAttempted.current) return;
 
     const obsSettings = getObsidianSettings();
@@ -407,7 +342,7 @@ const App: React.FC = () => {
         setNoteSaveToast({ type: 'error', message: 'Auto-save to Obsidian failed' });
       })
       .finally(() => setTimeout(() => setNoteSaveToast(null), 3000));
-  }, [isApiMode, markdown, isSharedSession, annotateMode]);
+  }, [isApiMode, markdown, annotateMode]);
 
   // Global paste listener for image attachments
   useEffect(() => {
@@ -612,7 +547,7 @@ const App: React.FC = () => {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
       // Don't intercept if any modal is open
-      if (showExport || showImport || showFeedbackPrompt || showClaudeCodeWarning ||
+      if (showExport || showFeedbackPrompt || showClaudeCodeWarning ||
           showAgentWarning || showPermissionModeSetup || pendingPasteImage) return;
 
       // Don't intercept if already submitted or submitting
@@ -656,7 +591,7 @@ const App: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
-    showExport, showImport, showFeedbackPrompt, showClaudeCodeWarning, showAgentWarning,
+    showExport, showFeedbackPrompt, showClaudeCodeWarning, showAgentWarning,
     showPermissionModeSetup, pendingPasteImage,
     submitted, isSubmitting, isApiMode, linkedDocHook.isActive, annotations.length, annotateMode,
     origin, getAgentWarning,
@@ -847,7 +782,6 @@ const App: React.FC = () => {
   const agentName = useMemo(() => {
     if (origin === 'opencode') return 'OpenCode';
     if (origin === 'claude-code') return 'Claude Code';
-    if (origin === 'pi') return 'Pi';
     return 'Coding Agent';
   }, [origin]);
 
@@ -884,9 +818,7 @@ const App: React.FC = () => {
               <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium hidden md:inline ${
                 origin === 'claude-code'
                   ? 'bg-orange-500/15 text-orange-400'
-                  : origin === 'pi'
-                    ? 'bg-violet-500/15 text-violet-400'
-                    : 'bg-zinc-500/20 text-zinc-400'
+                  : 'bg-zinc-500/20 text-zinc-400'
               }`}>
                 {agentName}
               </span>
@@ -1034,26 +966,6 @@ const App: React.FC = () => {
 
                 {showExportDropdown && (
                   <div className="absolute top-full right-0 mt-1 w-48 bg-popover border border-border rounded-lg shadow-xl z-50 py-1">
-                    {sharingEnabled && (
-                      <button
-                        onClick={async () => {
-                          setShowExportDropdown(false);
-                          try {
-                            await navigator.clipboard.writeText(shareUrl);
-                            setNoteSaveToast({ type: 'success', message: 'Share link copied' });
-                          } catch {
-                            setNoteSaveToast({ type: 'error', message: 'Failed to copy' });
-                          }
-                          setTimeout(() => setNoteSaveToast(null), 3000);
-                        }}
-                        className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center gap-2"
-                      >
-                        <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                        </svg>
-                        Copy Share Link
-                      </button>
-                    )}
                     <button
                       onClick={handleDownloadAnnotations}
                       className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center gap-2"
@@ -1090,23 +1002,6 @@ const App: React.FC = () => {
                         No notes apps configured.
                       </div>
                     )}
-                    {sharingEnabled && (
-                      <>
-                        <div className="my-1 border-t border-border" />
-                        <button
-                          onClick={() => {
-                            setShowExportDropdown(false);
-                            setShowImport(true);
-                          }}
-                          className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center gap-2"
-                        >
-                          <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3" />
-                          </svg>
-                          Import Review
-                        </button>
-                      </>
-                    )}
                   </div>
                 )}
               </div>
@@ -1121,17 +1016,6 @@ const App: React.FC = () => {
               onOpenExport={() => { setInitialExportTab(undefined); setShowExport(true); }}
               onOpenSettings={() => setMobileSettingsOpen(true)}
               onDownloadAnnotations={handleDownloadAnnotations}
-              onCopyShareLink={async () => {
-                try {
-                  await navigator.clipboard.writeText(shareUrl);
-                  setNoteSaveToast({ type: 'success', message: 'Share link copied' });
-                } catch {
-                  setNoteSaveToast({ type: 'error', message: 'Failed to copy' });
-                }
-                setTimeout(() => setNoteSaveToast(null), 3000);
-              }}
-              onOpenImport={() => setShowImport(true)}
-              sharingEnabled={sharingEnabled}
             />
           </div>
         </header>
@@ -1261,7 +1145,7 @@ const App: React.FC = () => {
                   isPlanDiffActive={isPlanDiffActive}
                   onPlanDiffToggle={() => setIsPlanDiffActive(!isPlanDiffActive)}
                   hasPreviousVersion={!linkedDocHook.isActive && planDiff.hasPreviousVersion}
-                  showDemoBadge={!isApiMode && !isLoadingShared && !isSharedSession}
+                  showDemoBadge={!isApiMode}
                   maxWidth={planMaxWidth}
                   onOpenLinkedDoc={handleOpenLinkedDoc}
                   linkedDocInfo={linkedDocHook.isActive ? { filepath: linkedDocHook.filepath!, onBack: handleLinkedDocBack, label: vaultBrowser.activeFile ? 'Vault File' : undefined } : null}
@@ -1283,8 +1167,6 @@ const App: React.FC = () => {
             onSelect={setSelectedAnnotationId}
             onDelete={handleDeleteAnnotation}
             onEdit={handleEditAnnotation}
-            shareUrl={shareUrl}
-            sharingEnabled={sharingEnabled}
             width={panelResize.width}
             editorAnnotations={editorAnnotations}
             onDeleteEditorAnnotation={deleteEditorAnnotation}
@@ -1299,27 +1181,12 @@ const App: React.FC = () => {
         <ExportModal
           isOpen={showExport}
           onClose={() => { setShowExport(false); setInitialExportTab(undefined); }}
-          shareUrl={shareUrl}
-          shareUrlSize={shareUrlSize}
-          shortShareUrl={shortShareUrl}
-          isGeneratingShortUrl={isGeneratingShortUrl}
-          shortUrlError={shortUrlError}
-          onGenerateShortUrl={generateShortUrl}
           annotationsOutput={annotationsOutput}
           annotationCount={annotations.length}
           taterSprite={taterMode ? <TaterSpritePullup /> : undefined}
-          sharingEnabled={sharingEnabled}
           markdown={markdown}
           isApiMode={isApiMode}
           initialTab={initialExportTab}
-        />
-
-        {/* Import Modal */}
-        <ImportModal
-          isOpen={showImport}
-          onClose={() => setShowImport(false)}
-          onImport={importFromShareUrl}
-          shareBaseUrl={shareBaseUrl}
         />
 
         {/* Feedback prompt dialog */}
@@ -1377,16 +1244,6 @@ const App: React.FC = () => {
           cancelText="Cancel"
           variant="warning"
           showCancel
-        />
-
-        {/* Shared URL load failure warning */}
-        <ConfirmDialog
-          isOpen={!!shareLoadError && !isApiMode}
-          onClose={clearShareLoadError}
-          title="Shared Plan Could Not Be Loaded"
-          message={shareLoadError}
-          subMessage="You are viewing a demo plan. This is sample content — it is not your data or anyone else's."
-          variant="warning"
         />
 
         {/* Save-to-notes toast */}

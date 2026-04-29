@@ -193,12 +193,6 @@ plannotator/
 │   │   ├── index.ts              # Plugin entry with submit_plan tool + review/annotate event handlers
 │   │   ├── plannotator.html      # Built plan review app
 │   │   └── review-editor.html    # Built code review app
-│   ├── marketing/                # Marketing site, docs, and blog (plannotator.ai)
-│   │   └── astro.config.mjs      # Astro 5 static site with content collections
-│   ├── paste-service/            # Paste service for short URL sharing
-│   │   ├── core/                 # Platform-agnostic logic (handler, storage interface, cors)
-│   │   ├── stores/               # Storage backends (fs, kv, s3)
-│   │   └── targets/              # Deployment entries (bun.ts, cloudflare.ts)
 │   ├── review/                   # Standalone review server (for development)
 │   │   ├── index.html
 │   │   ├── index.tsx
@@ -213,8 +207,8 @@ plannotator/
 │   │   ├── review.ts             # startReviewServer(), handleReviewServerReady()
 │   │   ├── annotate.ts           # startAnnotateServer(), handleAnnotateServerReady()
 │   │   ├── storage.ts            # Plan saving to disk (getPlanDir, savePlan, etc.)
-│   │   ├── share-url.ts          # Server-side share URL generation for remote sessions
-│   │   ├── remote.ts             # isRemoteSession(), getServerPort()
+│   │   ├── port.ts               # Local port selection
+│   │   ├── remote/               # Compatibility shim for legacy remote tests/imports
 │   │   ├── browser.ts            # openBrowser()
 │   │   ├── draft.ts              # Annotation draft persistence (~/.plannotator/drafts/)
 │   │   ├── integrations.ts       # Obsidian, Bear integrations
@@ -225,8 +219,8 @@ plannotator/
 │   │   ├── components/           # Viewer, Toolbar, Settings, etc.
 │   │   │   ├── plan-diff/        # PlanDiffBadge, PlanDiffViewer, clean/raw diff views
 │   │   │   └── sidebar/          # SidebarContainer, SidebarTabs, VersionBrowser
-│   │   ├── utils/                # parser.ts, sharing.ts, storage.ts, planSave.ts, agentSwitch.ts, planDiffEngine.ts
-│   │   ├── hooks/                # useSharing.ts, usePlanDiff.ts, useSidebar.ts, useLinkedDoc.ts, useAnnotationDraft.ts, useCodeAnnotationDraft.ts
+│   │   ├── utils/                # parser.ts, annotationWireFormat.ts, storage.ts, planSave.ts, agentSwitch.ts, planDiffEngine.ts
+│   │   ├── hooks/                # usePlanDiff.ts, useSidebar.ts, useLinkedDoc.ts, useAnnotationDraft.ts, useCodeAnnotationDraft.ts
 │   │   └── types.ts
 │   ├── shared/                   # Cross-package types (EditorAnnotation)
 │   ├── editor/                   # Plan review App.tsx
@@ -257,19 +251,8 @@ claude --plugin-dir ./apps/hook
 
 | Variable | Description |
 | --- | --- |
-| `PLANNOTATOR_REMOTE` | Set to `1` or `true` for remote mode (devcontainer, SSH). Uses fixed port and skips browser open. |
-| `PLANNOTATOR_PORT` | Fixed port to use. Default: random locally, `19432` for remote sessions. |
+| `PLANNOTATOR_PORT` | Fixed port to use. Default: random local port. |
 | `PLANNOTATOR_BROWSER` | Custom browser to open plans in. macOS: app name or path. Linux/Windows: executable path. |
-| `PLANNOTATOR_SHARE_URL` | Custom base URL for share links (self-hosted portal). Default: `https://share.plannotator.ai`. |
-| `PLANNOTATOR_PASTE_URL` | Base URL of the paste service API for short URL sharing. Default: `https://plannotator-paste.plannotator.workers.dev`. |
-
-**Legacy:** `SSH_TTY` and `SSH_CONNECTION` are still detected. Prefer `PLANNOTATOR_REMOTE=1` for explicit control.
-
-**Devcontainer/SSH usage:**
-```bash
-export PLANNOTATOR_REMOTE=1
-export PLANNOTATOR_PORT=9999
-```
 
 ## Plan Review Flow
 
@@ -370,16 +353,7 @@ Send Annotations → feedback sent to agent session
 | `/api/upload` | POST | Upload image, returns `{ path, originalName }` |
 | `/api/draft` | GET/POST/DELETE | Auto-save annotation drafts to survive server crashes |
 
-All servers use random ports locally or fixed port (`19432`) in remote mode.
-
-### Paste Service (`apps/paste-service/`)
-
-| Endpoint | Method | Purpose |
-| --- | --- | --- |
-| `/api/paste` | POST | Store compressed plan data, returns `{ id }` |
-| `/api/paste/:id` | GET | Retrieve stored compressed data |
-
-Runs as a separate service on port `19433` (self-hosted) or as a Cloudflare Worker (hosted).
+All servers use random ports locally unless `PLANNOTATOR_PORT` is set.
 
 ## Plan Version History
 
@@ -387,7 +361,7 @@ Every plan is automatically saved to `~/.plannotator/history/{project}/{slug}/` 
 
 This powers the version history API (`/api/plan/version`, `/api/plan/versions`, `/api/plan/history`) and the plan diff system.
 
-History saves independently of the `planSave` user setting (which controls decision snapshots in `~/.plannotator/plans/`). Storage functions live in `packages/server/storage.ts`, with Node-compatible duplicates in `apps/pi-extension/server.ts`. Slug format: `{sanitized-heading}-YYYY-MM-DD` (heading first for readability).
+History saves independently of the `planSave` user setting (which controls decision snapshots in `~/.plannotator/plans/`). Storage functions live in `packages/server/storage.ts`. Slug format: `{sanitized-heading}-YYYY-MM-DD` (heading first for readability).
 
 ## Plan Diff
 
@@ -469,45 +443,11 @@ interface Block {
 
 Text highlighting uses `web-highlighter` library. Code blocks use manual `<mark>` wrapping (web-highlighter can't select inside `<pre>`).
 
-## URL Sharing
+## Annotation Draft Storage
 
-**Location:** `packages/ui/utils/sharing.ts`, `packages/ui/hooks/useSharing.ts`
+**Location:** `packages/ui/hooks/useAnnotationDraft.ts`, `packages/ui/utils/annotationWireFormat.ts`
 
-Shares full plan + annotations via URL hash using deflate compression. For large plans, short URLs are created via the paste service (user must explicitly confirm).
-
-**Payload format:**
-
-```typescript
-// Image in shareable format: plain string (old) or [path, name] tuple (new)
-type ShareableImage = string | [string, string];
-
-interface SharePayload {
-  p: string; // Plan markdown
-  a: ShareableAnnotation[]; // Compact annotations
-  g?: ShareableImage[]; // Global attachments
-}
-
-type ShareableAnnotation =
-  | ["D", string, string | null, ShareableImage[]?] // [type, original, author, images?]
-  | ["R", string, string, string | null, ShareableImage[]?] // [type, original, replacement, author, images?]
-  | ["C", string, string, string | null, ShareableImage[]?] // [type, original, comment, author, images?]
-  | ["I", string, string, string | null, ShareableImage[]?] // [type, context, newText, author, images?]
-  | ["G", string, string | null, ShareableImage[]?]; // [type, comment, author, images?]
-```
-
-**Compression pipeline:**
-
-1. `JSON.stringify(payload)`
-2. `CompressionStream('deflate-raw')`
-3. Base64 encode
-4. URL-safe: replace `+/=` with `-_`
-
-**On load from shared URL:**
-
-1. Parse hash, decompress, restore annotations
-2. Find text positions in rendered DOM via text search
-3. Apply `<mark>` highlights
-4. Clear hash from URL (prevents re-parse on refresh)
+Annotation drafts are persisted locally through `/api/draft`. The compact wire format stores annotations and attached images without the deleted share-link flow.
 
 ## Settings Persistence
 
@@ -533,8 +473,6 @@ bun install
 # Run any app
 bun run dev:hook       # Hook server (plan review)
 bun run dev:review     # Review editor (code review)
-bun run dev:portal     # Portal editor
-bun run dev:marketing  # Marketing site
 bun run dev:vscode     # VS Code extension (watch mode)
 ```
 
@@ -544,8 +482,6 @@ bun run dev:vscode     # VS Code extension (watch mode)
 bun run build:hook       # Single-file HTML for hook server
 bun run build:review     # Code review editor
 bun run build:opencode   # OpenCode plugin (copies HTML from hook + review)
-bun run build:portal     # Static build for share.plannotator.ai
-bun run build:marketing  # Static build for plannotator.ai
 bun run build:vscode     # VS Code extension bundle
 bun run package:vscode   # Package .vsix for marketplace
 bun run build            # Build hook + opencode (main targets)
@@ -558,10 +494,6 @@ bun run build:hook && bun run build:opencode   # For UI changes
 ```
 
 Running only `build:opencode` will copy stale HTML files.
-
-## Marketing Site
-
-`apps/marketing/` is the plannotator.ai website — landing page, documentation, and blog. Built with Astro 5 (static output, zero client JS except a theme toggle island). Docs are markdown files in `src/content/docs/`, blog posts in `src/content/blog/`, both using Astro content collections. Tailwind CSS v4 via `@tailwindcss/vite`. Deploys to S3/CloudFront via GitHub Actions on push to main.
 
 ## Test plugin locally
 

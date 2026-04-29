@@ -33,21 +33,13 @@ Verify: `plannotator --version`
 }
 ```
 
-**Pi extension** — not yet adapted for this fork; use the upstream package.
-
----
-
 ## Environment variables
 
 All integrations share the same `plannotator` CLI binary, so these variables apply everywhere:
 
 | Variable | Default | Description |
 |---|---|---|
-| `PLANNOTATOR_REMOTE` | unset | Set to `1` or `true` for remote mode (SSH, devcontainer). Skips browser open; prints URL. |
-| `PLANNOTATOR_PORT` | random (local), `19432` (remote) | Fixed port for the HTTP server |
-| `PLANNOTATOR_SHARE` | enabled | Set to `"disabled"` to turn off URL sharing |
-| `PLANNOTATOR_SHARE_URL` | `https://share.plannotator.ai` | Custom share portal for self-hosting |
-| `PLANNOTATOR_PASTE_URL` | unset | Custom paste API for short-link sharing |
+| `PLANNOTATOR_PORT` | random | Fixed port for the local HTTP server |
 | `PLANNOTATOR_BROWSER` | system default | Browser to open (macOS: app name; Linux/Windows: executable path) |
 | `PLANNOTATOR_PLAN_TIMEOUT_SECONDS` | `345600` (96 hours) | Seconds to wait for a `submit_plan` decision before auto-rejecting. Set to `0` to disable. |
 
@@ -57,7 +49,6 @@ All integrations share the same `plannotator` CLI binary, so these variables app
 
 - [OpenCode plugin](#opencode-plugin) — `submit_plan`, `plannotator_review`, `plannotator_annotate` tools
 - [Claude Code hook](#claude-code-hook) — `ExitPlanMode` interceptor
-- [Pi extension](#pi-extension) — `/plannotator` command, `exit_plan_mode` tool
 
 ---
 
@@ -82,7 +73,7 @@ Blocks the agent until the user approves or rejects the plan in the browser UI.
 **Behavior:**
 
 1. Starts a local HTTP server serving the plan annotation UI.
-2. Opens the browser (local) or prints the URL (remote).
+2. Opens the browser on the local machine.
 3. Blocks `waitForDecision()` until the user acts.
 4. On **approve**: returns a success string; if the user added annotations, they are included as implementation notes.
 5. On **approve with agent switch**: additionally calls `session.prompt` with `noReply: true` to hand off to the target agent (e.g. `build`), and cycles the TUI display.
@@ -217,10 +208,10 @@ plannotator sessions --clean  Remove stale session files
 | Mode | Default port | Remote default |
 |---|---|---|
 | Plan review | Random ephemeral | `19432` |
-| Code review | Random ephemeral | `19432` |
-| Annotate | Random ephemeral | `19432` |
+| Code review | Random ephemeral | random |
+| Annotate | Random ephemeral | random |
 
-The server binds to `localhost` only. In remote mode it prints the URL; locally it opens the browser automatically.
+The server binds to `localhost` only and opens the browser automatically.
 
 ### Plan history
 
@@ -233,42 +224,6 @@ The directory is a git repo. Each plan submission commits the current content; a
 ### Obsidian integration
 
 Enabled in the UI settings panel. When active, approved plans are also written to an Obsidian vault with YAML frontmatter (`created`, `source`, `tags`) and a `[[Plannotator Plans]]` backlink.
-
----
-
-## Pi extension
-
-### Installation
-
-```bash
-pi install npm:@plannotator/pi-extension
-```
-
-### Flags
-
-| Flag | Description |
-|---|---|
-| `--plan` | Start in planning mode immediately |
-| `--plan-file <path>` | Custom plan file path (default: `PLAN.md`) |
-
-### Commands
-
-| Command | Description |
-|---|---|
-| `/plannotator` | Toggle planning mode on/off |
-| `Ctrl+Alt+P` | Toggle planning mode (keyboard shortcut) |
-| `/plannotator-review` | Open code review UI |
-| `/plannotator-annotate <file>` | Open annotation UI for a markdown file |
-
-### Planning mode behavior
-
-When active:
-- Write tool is restricted to the plan file only
-- `grep`, `find`, `ls`, `exit_plan_mode` tools are always available
-- `[DONE:n]` markers in the plan track execution progress
-- Calling `exit_plan_mode` opens the browser review UI
-
-The Pi extension uses a Node-compatible server (`apps/pi-extension/server.ts`) rather than Bun's `$`-shell APIs. It exposes the same HTTP endpoints as the shared Bun servers: `/api/approve`, `/api/deny`, `/api/cancel`, `/api/reset`, `/api/shutdown`.
 
 ---
 
@@ -305,20 +260,6 @@ The `slug` format is `{heading-kebab}-YYYY-MM-DD`. If the plan has no heading, t
 
 ---
 
-## Remote / devcontainer setup
-
-```bash
-export PLANNOTATOR_REMOTE=1
-export PLANNOTATOR_PORT=9999   # port you will forward
-```
-
-The server will print the URL instead of opening the browser. Forward the port to your local machine:
-
-- **VS Code devcontainer**: auto-forwarded; check the Ports panel.
-- **SSH**: add `LocalForward 9999 localhost:9999` to `~/.ssh/config`.
-
----
-
 ## Fork-specific changes (vs. upstream)
 
 - **Deterministic server teardown**: all shutdown paths (`/api/shutdown`, SIGINT/SIGTERM, `stop()`) call a shared `cleanup()` function — no bare `setTimeout` as the primary stop mechanism.
@@ -326,8 +267,5 @@ The server will print the URL instead of opening the browser. Forward the port t
 - **Git-based plan versioning**: replaces file-numbered `001.md / 002.md` history with a single-file-per-slug git repo under `~/.plannotator/plans/{project}/`.
 - **`commit_message` parameter on `submit_plan`**: agents document what changed since the previous version.
 - **Signal cleanup fix**: `/api/shutdown` now runs the same `cleanup()` as `stop()`, preventing stale SIGINT/SIGTERM listeners across multiple server starts.
-- **Pi extension cancel/reset endpoints**: `/api/cancel` and `/api/reset` added to the Node-based pi-extension server.
-
 Open issues for remaining work:
-- [#8](https://github.com/dzackgarza/plannotator-dzg-fork/issues/8) — Consolidate pi-extension git storage into `packages/server/storage.ts`
 - [#9](https://github.com/dzackgarza/plannotator-dzg-fork/issues/9) — Thread agent identity into git commit authorship

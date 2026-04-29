@@ -8,7 +8,12 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Annotation, ImageAttachment } from '../types';
-import { toShareable, toShareableImages, fromShareable, parseShareableImages } from '../utils/sharing';
+import {
+  fromStoredAnnotations,
+  parseStoredImages,
+  toStoredAnnotations,
+  toStoredImages,
+} from '../utils/annotationWireFormat';
 
 const DEBOUNCE_MS = 500;
 
@@ -33,7 +38,6 @@ interface UseAnnotationDraftOptions {
   annotations: Annotation[];
   globalAttachments: ImageAttachment[];
   isApiMode: boolean;
-  isSharedSession: boolean;
   submitted: boolean;
 }
 
@@ -47,7 +51,6 @@ export function useAnnotationDraft({
   annotations,
   globalAttachments,
   isApiMode,
-  isSharedSession,
   submitted,
 }: UseAnnotationDraftOptions): UseAnnotationDraftResult {
   const [draftBanner, setDraftBanner] = useState<{ count: number; timeAgo: string } | null>(null);
@@ -57,7 +60,7 @@ export function useAnnotationDraft({
 
   // Load draft on mount
   useEffect(() => {
-    if (!isApiMode || isSharedSession) return;
+    if (!isApiMode) return;
 
     fetch('/api/draft')
       .then(res => {
@@ -77,11 +80,11 @@ export function useAnnotationDraft({
       .catch(() => {
         hasMountedRef.current = true;
       });
-  }, [isApiMode, isSharedSession]);
+  }, [isApiMode]);
 
   // Debounced auto-save on annotation changes
   useEffect(() => {
-    if (!isApiMode || isSharedSession || submitted) return;
+    if (!isApiMode || submitted) return;
     if (!hasMountedRef.current) return;
     if (annotations.length === 0) return;
 
@@ -89,8 +92,8 @@ export function useAnnotationDraft({
 
     timerRef.current = setTimeout(() => {
       const payload: DraftData = {
-        a: toShareable(annotations) as unknown[],
-        g: toShareableImages(globalAttachments) as unknown[] | undefined,
+        a: toStoredAnnotations(annotations) as unknown[],
+        g: toStoredImages(globalAttachments) as unknown[] | undefined,
         ts: Date.now(),
       };
 
@@ -106,7 +109,7 @@ export function useAnnotationDraft({
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [annotations, globalAttachments, isApiMode, isSharedSession, submitted]);
+  }, [annotations, globalAttachments, isApiMode, submitted]);
 
   const restoreDraft = useCallback(() => {
     const data = draftDataRef.current;
@@ -115,8 +118,13 @@ export function useAnnotationDraft({
 
     if (!data?.a) return { annotations: [], globalAttachments: [] };
 
-    const restored = fromShareable(data.a as Parameters<typeof fromShareable>[0]);
-    const restoredGlobal = data.g ? (parseShareableImages(data.g as Parameters<typeof parseShareableImages>[0]) ?? []) : [];
+    const restored = fromStoredAnnotations(
+      data.a as Parameters<typeof fromStoredAnnotations>[0],
+    );
+    const restoredGlobal = data.g
+      ? (parseStoredImages(data.g as Parameters<typeof parseStoredImages>[0]) ??
+        [])
+      : [];
 
     return { annotations: restored, globalAttachments: restoredGlobal };
   }, []);

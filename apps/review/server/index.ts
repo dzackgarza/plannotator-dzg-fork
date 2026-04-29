@@ -2,7 +2,6 @@
  * Code Review Ephemeral Server
  *
  * Spawned to serve the code review UI for git diffs.
- * Supports both local and remote sessions.
  *
  * Usage:
  *   bun apps/review/server/index.ts           # Unstaged changes (git diff)
@@ -11,8 +10,7 @@
  *   bun apps/review/server/index.ts HEAD~5..HEAD  # Commit range
  *
  * Environment variables:
- *   PLANNOTATOR_REMOTE - Set to "1" or "true" for remote mode
- *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
+ *   PLANNOTATOR_PORT   - Fixed port to use (default: random local port)
  */
 
 import { $ } from "bun";

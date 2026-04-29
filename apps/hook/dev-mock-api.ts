@@ -208,7 +208,6 @@ export function devMockApi(): Plugin {
             origin: 'claude-code',
             previousPlan: PLAN_V2,
             versionInfo: { version: 3, totalVersions: 3, project: 'demo' },
-            sharingEnabled: true,
           }));
           return;
         }

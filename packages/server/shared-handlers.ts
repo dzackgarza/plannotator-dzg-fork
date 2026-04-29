@@ -128,10 +128,8 @@ export function handleDraftDelete(contentKey: string): Response {
 /** Open browser for local sessions or when a custom handler (e.g. VS Code extension) is configured. */
 export async function handleServerReady(
   url: string,
-  isRemote: boolean,
+  _isRemote: boolean,
   _port: number,
 ): Promise<void> {
-  if (!isRemote || process.env.PLANNOTATOR_BROWSER) {
-    await openBrowser(url);
-  }
+  await openBrowser(url);
 }

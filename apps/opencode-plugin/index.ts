@@ -6,8 +6,7 @@
  * annotate, approve, or request changes to the plan.
  *
  * Environment variables:
- *   PLANNOTATOR_REMOTE - Set to "1" or "true" for remote mode (devcontainer, SSH)
- *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
+ *   PLANNOTATOR_PORT   - Optional fixed port for the local review server
  *   PLANNOTATOR_PLAN_TIMEOUT_SECONDS - Max wait for submit_plan approval (default: 345600, set 0 to disable)
  *
  * @packageDocumentation
@@ -26,7 +25,6 @@ import {
   startAnnotateServer,
   handleAnnotateServerReady,
 } from "@plannotator/server/annotate";
-import { writeRemoteShareLink } from "@plannotator/server/share-url";
 import {
   REVIEW_TOOL_DIFF_TYPES,
   runPlannotatorAnnotateTool,
@@ -46,29 +44,6 @@ const reviewHtmlContent = reviewHtml as unknown as string;
 const DEFAULT_PLAN_TIMEOUT_SECONDS = 345_600; // 96 hours
 
 export const PlannotatorPlugin: Plugin = async (ctx) => {
-  // Helper to determine if sharing is enabled (lazy evaluation)
-  // Priority: OpenCode config > env var > default (enabled)
-  async function getSharingEnabled(): Promise<boolean> {
-    try {
-      const response = await ctx.client.config.get({ query: { directory: ctx.directory } });
-      // Config is wrapped in response.data
-      // @ts-ignore - share config may exist
-      const share = response?.data?.share;
-      if (share !== undefined) {
-        return share !== "disabled";
-      }
-    } catch {
-      // Config read failed, fall through to env var
-    }
-    // Fall back to env var
-    return process.env.PLANNOTATOR_SHARE !== "disabled";
-  }
-
-  // Custom share portal URL for self-hosting
-  function getShareBaseUrl(): string | undefined {
-    return process.env.PLANNOTATOR_SHARE_URL || undefined;
-  }
-
   /**
    * submit_plan wait timeout in seconds.
    * - unset: default to 96h
@@ -215,8 +190,6 @@ Do NOT proceed with implementation until your plan is approved.
             client: ctx.client,
             directory: ctx.directory,
             htmlContent: reviewHtmlContent,
-            getSharingEnabled,
-            getShareBaseUrl,
           },
           {
             ...defaultReviewToolDependencies,
@@ -252,17 +225,10 @@ Do NOT proceed with implementation until your plan is approved.
           const server = await startPlannotatorServer({
             plan: args.plan,
             origin: "opencode",
-            sharingEnabled: await getSharingEnabled(),
-            shareBaseUrl: getShareBaseUrl(),
             htmlContent,
             opencodeClient: ctx.client,
             commitMessage: args.commit_message,
-            onReady: async (url, isRemote, port) => {
-              handleServerReady(url, isRemote, port);
-              if (isRemote && await getSharingEnabled()) {
-                await writeRemoteShareLink(args.plan, getShareBaseUrl(), "review the plan", "plan only").catch(() => {});
-              }
-            },
+            onReady: handleServerReady,
           });
 
           const timeoutSeconds = getPlanTimeoutSeconds();

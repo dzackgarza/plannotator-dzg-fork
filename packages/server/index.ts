@@ -4,13 +4,12 @@
  * Provides a consistent server implementation for both Claude Code and OpenCode plugins.
  *
  * Environment variables:
- *   PLANNOTATOR_REMOTE - Set to "1" or "true" for remote/devcontainer mode
- *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
+ *   PLANNOTATOR_PORT   - Optional fixed port for the local review server
  *   PLANNOTATOR_ORIGIN - Origin identifier ("claude-code" or "opencode")
  */
 
 import { resolve } from "path";
-import { isRemoteSession, getServerPort } from "./remote";
+import { getServerPort } from "./port";
 import { openEditorDiff } from "./ide";
 import {
   saveToObsidian,
@@ -40,7 +39,7 @@ import { handleDoc, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc
 import { createEditorAnnotationHandler } from "./editor-annotations";
 
 // Re-export utilities
-export { isRemoteSession, getServerPort } from "./remote";
+export { getServerPort } from "./port";
 export { openBrowser } from "./browser";
 export * from "./integrations";
 export * from "./storage";
@@ -58,12 +57,6 @@ export interface ServerOptions {
   htmlContent: string;
   /** Current permission mode to preserve (Claude Code only) */
   permissionMode?: string;
-  /** Whether URL sharing is enabled (default: true) */
-  sharingEnabled?: boolean;
-  /** Custom base URL for share links (default: https://share.plannotator.ai) */
-  shareBaseUrl?: string;
-  /** Base URL of the paste service API for short URL sharing */
-  pasteApiUrl?: string;
   /** Called when server starts with the URL, remote status, and port */
   onReady?: (url: string, isRemote: boolean, port: number) => void;
   /** OpenCode client for querying available agents (OpenCode only) */
@@ -109,9 +102,9 @@ const RETRY_DELAY_MS = 500;
 export async function startPlannotatorServer(
   options: ServerOptions
 ): Promise<ServerResult> {
-  const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, commitMessage } = options;
+  const { plan, origin, htmlContent, permissionMode, onReady, commitMessage } =
+    options;
 
-  const isRemote = isRemoteSession();
   const configuredPort = getServerPort();
   const draftKey = contentHash(plan);
   const editorAnnotations = createEditorAnnotationHandler();
@@ -225,7 +218,14 @@ export async function startPlannotatorServer(
 
           // API: Get plan content
           if (url.pathname === "/api/plan") {
-            return Response.json({ plan, origin, permissionMode, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo });
+            return Response.json({
+              plan,
+              origin,
+              permissionMode,
+              repoInfo,
+              previousPlan,
+              versionInfo,
+            });
           }
 
           // API: Serve a linked markdown document
@@ -510,8 +510,13 @@ export async function startPlannotatorServer(
       }
 
       if (isAddressInUse) {
-        const hint = isRemote ? " (set PLANNOTATOR_PORT to use different port)" : "";
-        throw new Error(`Port ${configuredPort} in use after ${MAX_RETRIES} retries${hint}`);
+        const hint =
+          configuredPort !== 0
+            ? " (set PLANNOTATOR_PORT to use different port)"
+            : "";
+        throw new Error(
+          `Port ${configuredPort} in use after ${MAX_RETRIES} retries${hint}`,
+        );
       }
 
       throw err;
@@ -526,13 +531,13 @@ export async function startPlannotatorServer(
 
   // Notify caller that server is ready
   if (onReady) {
-    onReady(serverUrl, isRemote, server.port);
+    onReady(serverUrl, false, server.port);
   }
 
   return {
     port: server.port,
     url: serverUrl,
-    isRemote,
+    isRemote: false,
     waitForDecision: () => decisionPromise,
     stop: cleanup,
   };

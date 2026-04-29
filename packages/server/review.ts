@@ -5,11 +5,10 @@
  * Follows the same patterns as the plan server.
  *
  * Environment variables:
- *   PLANNOTATOR_REMOTE - Set to "1" or "true" for remote/devcontainer mode
- *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
+ *   PLANNOTATOR_PORT   - Optional fixed port for the local review server
  */
 
-import { isRemoteSession, getServerPort } from "./remote";
+import { getServerPort } from "./port";
 import { type DiffType, type GitContext, runGitDiff, getFileContentsForDiff, gitAddFile, gitResetFile, parseWorktreeDiffType, validateFilePath } from "./git";
 import { getRepoInfo } from "./repo";
 import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, type OpencodeClient } from "./shared-handlers";
@@ -17,7 +16,7 @@ import { contentHash, deleteDraft } from "./draft";
 import { createEditorAnnotationHandler } from "./editor-annotations";
 
 // Re-export utilities
-export { isRemoteSession, getServerPort } from "./remote";
+export { getServerPort } from "./port";
 export { openBrowser } from "./browser";
 export { type DiffType, type DiffOption, type GitContext, type WorktreeInfo } from "./git";
 export { handleServerReady as handleReviewServerReady } from "./shared-handlers";
@@ -34,15 +33,11 @@ export interface ReviewServerOptions {
   /** HTML content to serve for the UI */
   htmlContent: string;
   /** Origin identifier for UI customization */
-  origin?: "opencode" | "claude-code" | "pi";
+  origin?: "opencode" | "claude-code";
   /** Current diff type being displayed */
   diffType?: DiffType;
   /** Git context with branch info and available diff options */
   gitContext?: GitContext;
-  /** Whether URL sharing is enabled (default: true) */
-  sharingEnabled?: boolean;
-  /** Custom base URL for share links (default: https://share.plannotator.ai) */
-  shareBaseUrl?: string;
   /** Called when server starts with the URL, remote status, and port */
   onReady?: (url: string, isRemote: boolean, port: number) => void;
   /** OpenCode client for querying available agents (OpenCode only) */
@@ -86,7 +81,7 @@ const RETRY_DELAY_MS = 500;
 export async function startReviewServer(
   options: ReviewServerOptions
 ): Promise<ReviewServerResult> {
-  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady, cwd } = options;
+  const { htmlContent, origin, gitContext, onReady, cwd } = options;
 
   const draftKey = contentHash(options.rawPatch);
   const editorAnnotations = createEditorAnnotationHandler();
@@ -97,7 +92,6 @@ export async function startReviewServer(
   let currentDiffType: DiffType = options.diffType || "uncommitted";
   let currentError = options.error;
 
-  const isRemote = isRemoteSession();
   const configuredPort = getServerPort();
 
   // Detect repo info (cached for this session)
@@ -160,8 +154,6 @@ export async function startReviewServer(
               origin,
               diffType: currentDiffType,
               gitContext,
-              sharingEnabled,
-              shareBaseUrl,
               repoInfo,
               ...(currentError && { error: currentError }),
             });
@@ -355,8 +347,13 @@ export async function startReviewServer(
       }
 
       if (isAddressInUse) {
-        const hint = isRemote ? " (set PLANNOTATOR_PORT to use different port)" : "";
-        throw new Error(`Port ${configuredPort} in use after ${MAX_RETRIES} retries${hint}`);
+        const hint =
+          configuredPort !== 0
+            ? " (set PLANNOTATOR_PORT to use different port)"
+            : "";
+        throw new Error(
+          `Port ${configuredPort} in use after ${MAX_RETRIES} retries${hint}`,
+        );
       }
 
       throw err;
@@ -371,13 +368,13 @@ export async function startReviewServer(
 
   // Notify caller that server is ready
   if (onReady) {
-    onReady(serverUrl, isRemote, server.port);
+    onReady(serverUrl, false, server.port);
   }
 
   return {
     port: server.port,
     url: serverUrl,
-    isRemote,
+    isRemote: false,
     waitForDecision: () => decisionPromise,
     stop: cleanup,
   };

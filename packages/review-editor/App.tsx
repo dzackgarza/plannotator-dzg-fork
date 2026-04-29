@@ -35,10 +35,9 @@ interface DiffData {
   files: DiffFile[];
   rawPatch: string;
   gitRef: string;
-  origin?: 'opencode' | 'claude-code' | 'pi';
+  origin?: 'opencode' | 'claude-code';
   diffType?: string;
   gitContext?: GitContext;
-  sharingEnabled?: boolean;
 }
 
 // Simple diff parser to extract files from unified diff
@@ -139,7 +138,7 @@ const ReviewApp: React.FC = () => {
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set());
   const [hideViewedFiles, setHideViewedFiles] = useState(false);
-  const [origin, setOrigin] = useState<'opencode' | 'claude-code' | 'pi' | null>(null);
+  const [origin, setOrigin] = useState<'opencode' | 'claude-code' | null>(null);
   const [diffType, setDiffType] = useState<string>('uncommitted');
   const [gitContext, setGitContext] = useState<GitContext | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
@@ -148,7 +147,6 @@ const ReviewApp: React.FC = () => {
   const [isApproving, setIsApproving] = useState(false);
   const [submitted, setSubmitted] = useState<'approved' | 'feedback' | 'cancelled' | false>(false);
   const [showApproveWarning, setShowApproveWarning] = useState(false);
-  const [sharingEnabled, setSharingEnabled] = useState(true);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
 
   const identity = useMemo(() => getIdentity(), []);
@@ -214,10 +212,9 @@ const ReviewApp: React.FC = () => {
       .then((data: {
         rawPatch: string;
         gitRef: string;
-        origin?: 'opencode' | 'claude-code' | 'pi';
+        origin?: 'opencode' | 'claude-code';
         diffType?: string;
         gitContext?: GitContext;
-        sharingEnabled?: boolean;
         repoInfo?: { display: string; branch?: string };
         error?: string;
       }) => {
@@ -229,13 +226,11 @@ const ReviewApp: React.FC = () => {
           origin: data.origin,
           diffType: data.diffType,
           gitContext: data.gitContext,
-          sharingEnabled: data.sharingEnabled,
         });
         setFiles(apiFiles);
         if (data.origin) setOrigin(data.origin);
         if (data.diffType) setDiffType(data.diffType);
         if (data.gitContext) setGitContext(data.gitContext);
-        if (data.sharingEnabled !== undefined) setSharingEnabled(data.sharingEnabled);
         if (data.repoInfo) setRepoInfo(data.repoInfo);
         if (data.error) setDiffError(data.error);
       })
@@ -649,11 +644,9 @@ const ReviewApp: React.FC = () => {
               <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium hidden md:inline ${
                 origin === 'claude-code'
                   ? 'bg-orange-500/15 text-orange-400'
-                  : origin === 'pi'
-                    ? 'bg-violet-500/15 text-violet-400'
-                    : 'bg-zinc-500/20 text-zinc-400'
+                  : 'bg-zinc-500/20 text-zinc-400'
               }`}>
-                {origin === 'claude-code' ? 'Claude Code' : origin === 'pi' ? 'Pi' : 'OpenCode'}
+                {origin === 'claude-code' ? 'Claude Code' : 'OpenCode'}
               </span>
             )} */}
             {repoInfo && (
@@ -1057,12 +1050,12 @@ const ReviewApp: React.FC = () => {
           title={submitted === 'approved' ? 'Changes Approved' : submitted === 'cancelled' ? 'Review Cancelled' : 'Feedback Sent'}
           subtitle={
             submitted === 'approved'
-              ? `${origin === 'claude-code' ? 'Claude Code' : origin === 'pi' ? 'Pi' : 'OpenCode'} will proceed with the changes.`
+              ? `${origin === 'claude-code' ? 'Claude Code' : 'OpenCode'} will proceed with the changes.`
               : submitted === 'cancelled'
                 ? `The review was cancelled.`
-                : `${origin === 'claude-code' ? 'Claude Code' : origin === 'pi' ? 'Pi' : 'OpenCode'} will address your review feedback.`
+                : `${origin === 'claude-code' ? 'Claude Code' : 'OpenCode'} will address your review feedback.`
           }
-          agentLabel={origin === 'claude-code' ? 'Claude Code' : origin === 'pi' ? 'Pi' : 'OpenCode'}
+          agentLabel={origin === 'claude-code' ? 'Claude Code' : 'OpenCode'}
         />
 
         {/* Update notification */}

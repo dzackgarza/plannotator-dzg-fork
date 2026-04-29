@@ -112,7 +112,7 @@ export const Landing: React.FC<LandingProps> = ({ onEnter }) => {
                   </button>
                 ) : (
                   <a
-                    href="https://share.plannotator.ai"
+                    href="https://github.com/backnotprop/plannotator"
                     className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-primary-foreground font-medium hover:opacity-90 transition-opacity"
                   >
                     Open Demo

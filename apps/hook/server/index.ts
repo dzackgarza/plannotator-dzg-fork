@@ -27,8 +27,7 @@
  *   --browser <name>   - Override which browser to open (e.g. "Google Chrome")
  *
  * Environment variables:
- *   PLANNOTATOR_REMOTE - Set to "1" or "true" for remote mode (preferred)
- *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
+ *   PLANNOTATOR_PORT   - Optional fixed port for the local review server
  */
 
 import {
@@ -44,7 +43,6 @@ import {
   handleAnnotateServerReady,
 } from "@plannotator/server/annotate";
 import { getGitContext, runGitDiff } from "@plannotator/server/git";
-import { writeRemoteShareLink } from "@plannotator/server/share-url";
 import { resolveMarkdownFile } from "@plannotator/server/resolve-file";
 import { registerSession, unregisterSession, listSessions } from "@plannotator/server/sessions";
 import { openBrowser } from "@plannotator/server/browser";
@@ -72,15 +70,6 @@ if (browserIdx !== -1 && args[browserIdx + 1]) {
 
 // Ensure session cleanup on exit
 process.on("exit", () => unregisterSession());
-
-// Check if URL sharing is enabled (default: true)
-const sharingEnabled = process.env.PLANNOTATOR_SHARE !== "disabled";
-
-// Custom share portal URL for self-hosting
-const shareBaseUrl = process.env.PLANNOTATOR_SHARE_URL || undefined;
-
-// Paste service URL for short URL sharing
-const pasteApiUrl = process.env.PLANNOTATOR_PASTE_URL || undefined;
 
 if (args[0] === "sessions") {
   // ============================================
@@ -151,16 +140,8 @@ if (args[0] === "sessions") {
     origin: "claude-code",
     diffType: "uncommitted",
     gitContext,
-    sharingEnabled,
-    shareBaseUrl,
     htmlContent: reviewHtmlContent,
-    onReady: async (url, isRemote, port) => {
-      handleReviewServerReady(url, isRemote, port);
-
-      if (isRemote && sharingEnabled && rawPatch) {
-        await writeRemoteShareLink(rawPatch, shareBaseUrl, "review changes", "diff only").catch(() => {});
-      }
-    },
+    onReady: handleReviewServerReady,
   });
 
   registerSession({
@@ -240,16 +221,8 @@ if (args[0] === "sessions") {
     markdown,
     filePath: absolutePath,
     origin: "claude-code",
-    sharingEnabled,
-    shareBaseUrl,
     htmlContent: planHtmlContent,
-    onReady: async (url, isRemote, port) => {
-      handleAnnotateServerReady(url, isRemote, port);
-
-      if (isRemote && sharingEnabled) {
-        await writeRemoteShareLink(markdown, shareBaseUrl, "annotate", "document only").catch(() => {});
-      }
-    },
+    onReady: handleAnnotateServerReady,
   });
 
   registerSession({
@@ -304,18 +277,9 @@ if (args[0] === "sessions") {
     plan: planContent,
     origin: "claude-code",
     permissionMode,
-    sharingEnabled,
-    shareBaseUrl,
-    pasteApiUrl,
     commitMessage,
     htmlContent: planHtmlContent,
-    onReady: async (url, isRemote, port) => {
-      handleServerReady(url, isRemote, port);
-
-      if (isRemote && sharingEnabled) {
-        await writeRemoteShareLink(planContent, shareBaseUrl, "review the plan", "plan only").catch(() => {});
-      }
-    },
+    onReady: handleServerReady,
   });
 
   registerSession({

@@ -157,8 +157,6 @@ export async function saveToHistory(
     authorName = "Claude Code";
   } else if (origin === "opencode") {
     authorName = "OpenCode";
-  } else if (origin === "pi") {
-    authorName = "Pi";
   }
   const author = `${authorName} <bot@plannotator.ai>`;
 

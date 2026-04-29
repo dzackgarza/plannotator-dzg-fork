@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import { useUpdateCheck } from '../hooks/useUpdateCheck';
 
-const PI_INSTALL_COMMAND = 'pi install npm:@plannotator/pi-extension';
-
 function getInstallCommand(): string {
   const isWindows = typeof navigator !== 'undefined' && /^Win/.test(navigator.platform);
   return isWindows
@@ -11,7 +9,7 @@ function getInstallCommand(): string {
 }
 
 interface UpdateBannerProps {
-  origin?: 'claude-code' | 'opencode' | 'pi' | null;
+  origin?: 'claude-code' | 'opencode' | null;
 }
 
 export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
@@ -23,9 +21,8 @@ export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
   const urlParams = new URLSearchParams(window.location.search);
   const previewOrigin = urlParams.get('preview-origin');
   const effectiveOrigin = previewOrigin || origin;
-  const isPi = effectiveOrigin === 'pi';
   const isOpenCode = effectiveOrigin === 'opencode';
-  const installCommand = isPi ? PI_INSTALL_COMMAND : getInstallCommand();
+  const installCommand = getInstallCommand();
 
   if (!updateInfo?.updateAvailable || dismissed) return null;
 
@@ -89,11 +86,6 @@ export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
             {isOpenCode && (
               <p className="text-xs text-muted-foreground mt-3">
                 Run the install script, then restart OpenCode.
-              </p>
-            )}
-            {isPi && (
-              <p className="text-xs text-muted-foreground mt-3">
-                Run the install command, then restart Pi.
               </p>
             )}
 

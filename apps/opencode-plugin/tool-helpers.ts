@@ -46,16 +46,12 @@ export interface ReviewToolEnvironment {
   client: SessionPromptClient;
   directory: string;
   htmlContent: string;
-  getSharingEnabled: () => Promise<boolean>;
-  getShareBaseUrl: () => string | undefined;
 }
 
 export interface AnnotateToolEnvironment {
   client: SessionPromptClient;
   directory: string;
   htmlContent: string;
-  getSharingEnabled: () => Promise<boolean>;
-  getShareBaseUrl: () => string | undefined;
 }
 
 export interface ReviewToolDependencies {
@@ -264,8 +260,6 @@ export async function runPlannotatorReviewTool(
     origin: "opencode",
     diffType,
     gitContext,
-    sharingEnabled: await env.getSharingEnabled(),
-    shareBaseUrl: env.getShareBaseUrl(),
     htmlContent: env.htmlContent,
     opencodeClient: env.client,
     cwd: env.directory,
@@ -297,8 +291,6 @@ export async function runPlannotatorAnnotateTool(
     markdown,
     filePath: resolved.path,
     origin: "opencode",
-    sharingEnabled: await env.getSharingEnabled(),
-    shareBaseUrl: env.getShareBaseUrl(),
     htmlContent: env.htmlContent,
     onReady: deps.onReady,
   });

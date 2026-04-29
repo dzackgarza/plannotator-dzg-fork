@@ -7,11 +7,10 @@
  * render it without modifications.
  *
  * Environment variables:
- *   PLANNOTATOR_REMOTE - Set to "1" or "true" for remote/devcontainer mode
- *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
+ *   PLANNOTATOR_PORT   - Optional fixed port for the local review server
  */
 
-import { isRemoteSession, getServerPort } from "./remote";
+import { getServerPort } from "./port";
 import { getRepoInfo } from "./repo";
 import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete } from "./shared-handlers";
 import { handleDoc } from "./reference-handlers";
@@ -19,7 +18,7 @@ import { contentHash, deleteDraft } from "./draft";
 import { dirname } from "path";
 
 // Re-export utilities
-export { isRemoteSession, getServerPort } from "./remote";
+export { getServerPort } from "./port";
 export { openBrowser } from "./browser";
 export { handleServerReady as handleAnnotateServerReady } from "./shared-handlers";
 
@@ -33,11 +32,7 @@ export interface AnnotateServerOptions {
   /** HTML content to serve for the UI */
   htmlContent: string;
   /** Origin identifier for UI customization */
-  origin?: "opencode" | "claude-code" | "pi";
-  /** Whether URL sharing is enabled (default: true) */
-  sharingEnabled?: boolean;
-  /** Custom base URL for share links */
-  shareBaseUrl?: string;
+  origin?: "opencode" | "claude-code";
   /** Called when server starts with the URL, remote status, and port */
   onReady?: (url: string, isRemote: boolean, port: number) => void;
 }
@@ -80,12 +75,9 @@ export async function startAnnotateServer(
     filePath,
     htmlContent,
     origin,
-    sharingEnabled = true,
-    shareBaseUrl,
     onReady,
   } = options;
 
-  const isRemote = isRemoteSession();
   const configuredPort = getServerPort();
   const draftKey = contentHash(markdown);
 
@@ -143,8 +135,6 @@ export async function startAnnotateServer(
               origin,
               mode: "annotate",
               filePath,
-              sharingEnabled,
-              shareBaseUrl,
               repoInfo,
             });
           }
@@ -242,9 +232,10 @@ export async function startAnnotateServer(
       }
 
       if (isAddressInUse) {
-        const hint = isRemote
-          ? " (set PLANNOTATOR_PORT to use different port)"
-          : "";
+        const hint =
+          configuredPort !== 0
+            ? " (set PLANNOTATOR_PORT to use different port)"
+            : "";
         throw new Error(
           `Port ${configuredPort} in use after ${MAX_RETRIES} retries${hint}`
         );
@@ -262,13 +253,13 @@ export async function startAnnotateServer(
 
   // Notify caller that server is ready
   if (onReady) {
-    onReady(serverUrl, isRemote, server.port);
+    onReady(serverUrl, false, server.port);
   }
 
   return {
     port: server.port,
     url: serverUrl,
-    isRemote,
+    isRemote: false,
     waitForDecision: () => decisionPromise,
     stop: cleanup,
   };
