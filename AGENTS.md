@@ -39,35 +39,57 @@ effort should own a task.
 - Do not route difficult tasks to older or weaker models just to save usage if
   the likely result is review debt, rewrite debt, or false confidence.
 
-## Current Task Hierarchy
+## Current Task Poset
 
 Tracker plan: `NIM-1`
 
-Implementation slices:
-- `NIM-2`: S-1 Strip remote collaboration surface area
-- `NIM-3`: S-2 Define daemon state machine module
-- `NIM-4`: S-3 Refactor per-mode servers into a multiplexed router
-- `NIM-5`: S-4 Implement daemon process lifecycle
-- `NIM-6`: S-5 Add submit, wait, state, and clear daemon endpoints
-- `NIM-7`: S-6 Define the CLI surface around the daemon
-- `NIM-8`: S-7 Add notifications for state transitions
-- `NIM-9`: S-8 Refactor agent integrations into thin CLI clients
-- `NIM-10`: S-9 Update build and packaging around the daemon artifact
+Interpret `A < B` as: task `A` must be completed before task `B` can be
+considered complete.
 
-Sprint-wide testing policy:
-- `NIM-12`: Shared TDD gate and proof-authoring policy
-- `NIM-11`: Final verification and proof execution
+Global testing gate:
+- `NIM-12 < NIM-13`
+- `NIM-12 < NIM-14`
+- `NIM-12 < NIM-15`
+- `NIM-12 < NIM-16`
+- `NIM-12 < NIM-17`
+- `NIM-12 < NIM-18`
+- `NIM-12 < NIM-19`
+- `NIM-12 < NIM-20`
+- `NIM-12 < NIM-21`
 
-Per-slice TDD pairing:
-- `NIM-13` supports `NIM-2`
-- `NIM-14` supports `NIM-3`
-- `NIM-15` supports `NIM-4`
-- `NIM-16` supports `NIM-5`
-- `NIM-17` supports `NIM-6`
-- `NIM-18` supports `NIM-7`
-- `NIM-19` supports `NIM-8`
-- `NIM-20` supports `NIM-9`
-- `NIM-21` supports `NIM-10`
+Primary chain with paired TDD tasks:
+- `NIM-13 < NIM-2`
+- `NIM-2 < NIM-14`
+- `NIM-14 < NIM-3`
+- `NIM-3 < NIM-15`
+- `NIM-15 < NIM-4`
+- `NIM-4 < NIM-16`
+- `NIM-16 < NIM-5`
+- `NIM-5 < NIM-17`
+- `NIM-17 < NIM-6`
+- `NIM-6 < NIM-18`
+- `NIM-18 < NIM-7`
+- `NIM-7 < NIM-20`
+- `NIM-20 < NIM-9`
+- `NIM-9 < NIM-21`
+- `NIM-21 < NIM-10`
+
+Side branch:
+- `NIM-6 < NIM-19`
+- `NIM-19 < NIM-8`
+
+Final verification:
+- `NIM-8 < NIM-11`
+- `NIM-10 < NIM-11`
+- `NIM-13 < NIM-11`
+- `NIM-14 < NIM-11`
+- `NIM-15 < NIM-11`
+- `NIM-16 < NIM-11`
+- `NIM-17 < NIM-11`
+- `NIM-18 < NIM-11`
+- `NIM-19 < NIM-11`
+- `NIM-20 < NIM-11`
+- `NIM-21 < NIM-11`
 
 ## Project Structure
 
