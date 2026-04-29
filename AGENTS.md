@@ -43,53 +43,118 @@ effort should own a task.
 
 Tracker plan: `NIM-1`
 
-Interpret `A < B` as: task `A` must be completed before task `B` can be
-considered complete.
+```mermaid
+graph TD
+    N12["NIM-12 Shared TDD Gate"]
 
-Global testing gate:
-- `NIM-12 < NIM-13`
-- `NIM-12 < NIM-14`
-- `NIM-12 < NIM-15`
-- `NIM-12 < NIM-16`
-- `NIM-12 < NIM-17`
-- `NIM-12 < NIM-18`
-- `NIM-12 < NIM-19`
-- `NIM-12 < NIM-20`
-- `NIM-12 < NIM-21`
+    N13["NIM-13 TDD for S-1"] --> N2["NIM-2 S-1 Delete Remote Surface"]
+    N2 --> N14["NIM-14 TDD for S-2"]
+    N14 --> N3["NIM-3 S-2 State Machine"]
+    N3 --> N15["NIM-15 TDD for S-3"]
+    N15 --> N4["NIM-4 S-3 Multiplexed Router"]
+    N4 --> N16["NIM-16 TDD for S-4"]
+    N16 --> N5["NIM-5 S-4 Daemon Lifecycle"]
+    N5 --> N17["NIM-17 TDD for S-5"]
+    N17 --> N6["NIM-6 S-5 Submit/Wait/Clear"]
+    N6 --> N18["NIM-18 TDD for S-6"]
+    N18 --> N7["NIM-7 S-6 CLI Surface"]
+    N7 --> N20["NIM-20 TDD for S-8"]
+    N20 --> N9["NIM-9 S-8 Agent Wrappers"]
+    N9 --> N21["NIM-21 TDD for S-9"]
+    N21 --> N10["NIM-10 S-9 Build and Packaging"]
 
-Primary chain with paired TDD tasks:
-- `NIM-13 < NIM-2`
-- `NIM-2 < NIM-14`
-- `NIM-14 < NIM-3`
-- `NIM-3 < NIM-15`
-- `NIM-15 < NIM-4`
-- `NIM-4 < NIM-16`
-- `NIM-16 < NIM-5`
-- `NIM-5 < NIM-17`
-- `NIM-17 < NIM-6`
-- `NIM-6 < NIM-18`
-- `NIM-18 < NIM-7`
-- `NIM-7 < NIM-20`
-- `NIM-20 < NIM-9`
-- `NIM-9 < NIM-21`
-- `NIM-21 < NIM-10`
+    N6 --> N19["NIM-19 TDD for S-7"]
+    N19 --> N8["NIM-8 S-7 Notifications"]
 
-Side branch:
-- `NIM-6 < NIM-19`
-- `NIM-19 < NIM-8`
+    N12 --> N13
+    N12 --> N14
+    N12 --> N15
+    N12 --> N16
+    N12 --> N17
+    N12 --> N18
+    N12 --> N19
+    N12 --> N20
+    N12 --> N21
 
-Final verification:
-- `NIM-8 < NIM-11`
-- `NIM-10 < NIM-11`
-- `NIM-13 < NIM-11`
-- `NIM-14 < NIM-11`
-- `NIM-15 < NIM-11`
-- `NIM-16 < NIM-11`
-- `NIM-17 < NIM-11`
-- `NIM-18 < NIM-11`
-- `NIM-19 < NIM-11`
-- `NIM-20 < NIM-11`
-- `NIM-21 < NIM-11`
+    N13 --> N11["NIM-11 Final Verification"]
+    N14 --> N11
+    N15 --> N11
+    N16 --> N11
+    N17 --> N11
+    N18 --> N11
+    N19 --> N11
+    N20 --> N11
+    N21 --> N11
+    N8 --> N11
+    N10 --> N11
+```
+
+## Delegation Workflows
+
+When a task is delegated to a subagent, treat that delegation as the active
+execution path unless the delegate is explicitly replaced or abandoned.
+
+### Blocking delegation
+
+Use this for real implementation, proof-authoring, refactors, and other
+substantive tasks where overlapping work would create confusion or duplicate
+effort.
+
+- Create a git checkpoint commit before assigning the task to a subagent.
+- Assign the task to a single subagent with a bounded scope.
+- Do not work on the same task locally while the subagent owns it.
+- Do not treat a polling timeout as permission to take over the task.
+- Wait until the subagent actually reports completion, then review the result.
+- After review, either accept the work, request changes, or explicitly replace
+  the delegate.
+- When the subagent is done, stage and commit the full delegated change as one
+  unit before final acceptance.
+- Review the resulting git diff or commit diff to ensure the work actually
+  matches the assigned task and did not drift or game the request.
+
+### Status polling
+
+Timed waits are allowed only for status checks. They are not completion signals.
+
+- A timed wait expiring means only: no result has been returned yet.
+- It does not mean the subagent failed.
+- It does not mean the task should be taken over locally.
+- It does not mean overlapping work is now acceptable.
+
+### Delegate replacement
+
+If a delegated task must be rerouted:
+
+- Explicitly abandon or replace the current delegate.
+- Record the reassignment in the tracker.
+- Send the replacement delegate the full task specification, concrete repo
+  context, success criteria, non-goals, and write-scope boundaries.
+- Only after explicit replacement may a different agent or the main agent take
+  over the task.
+
+### Handoff requirements
+
+Do not compress the task into a vague summary when delegating.
+
+- Give the delegate the full task specification, ideally verbatim from the
+  tracker or plan.
+- Include the task's place in the dependency order or poset when that affects
+  sequencing or scope.
+- Include concrete repo entry points, relevant files, and expected proof or
+  verification commands.
+- State the expected deliverable format: changed files, verification run,
+  blockers, and unresolved questions.
+- State non-goals explicitly so the delegate does not wander into adjacent work.
+
+### Lessons learned
+
+- A status polling timeout is not a completion signal.
+- No local overlap is allowed while a delegate still owns the task.
+- A missing or delayed result should trigger better orchestration, not silent
+  takeover of the task.
+- Delegates need the full task specification, not a compressed paraphrase.
+- Delegated work should be checkpointed before handoff and committed as a unit
+  when returned so the diff can be reviewed against task compliance.
 
 ## Project Structure
 
@@ -170,7 +235,7 @@ claude --plugin-dir ./apps/hook
 ## Environment Variables
 
 | Variable | Description |
-|----------|-------------|
+| --- | --- |
 | `PLANNOTATOR_REMOTE` | Set to `1` or `true` for remote mode (devcontainer, SSH). Uses fixed port and skips browser open. |
 | `PLANNOTATOR_PORT` | Fixed port to use. Default: random locally, `19432` for remote sessions. |
 | `PLANNOTATOR_BROWSER` | Custom browser to open plans in. macOS: app name or path. Linux/Windows: executable path. |
@@ -241,57 +306,57 @@ Send Annotations → feedback sent to agent session
 
 ### Plan Server (`packages/server/index.ts`)
 
-| Endpoint              | Method | Purpose                                    |
-| --------------------- | ------ | ------------------------------------------ |
-| `/api/plan`           | GET    | Returns `{ plan, origin, previousPlan, versionInfo }` |
-| `/api/plan/version`   | GET    | Fetch specific version (`?v=N`)            |
-| `/api/plan/versions`  | GET    | List all versions of current plan          |
-| `/api/plan/history`   | GET    | List all plans in current project          |
-| `/api/approve`        | POST   | Approve plan (body: planSave, agentSwitch, obsidian, bear, feedback) |
-| `/api/deny`           | POST   | Deny plan (body: feedback, planSave)       |
-| `/api/image`          | GET    | Serve image by path query param            |
-| `/api/upload`         | POST   | Upload image, returns `{ path, originalName }` |
-| `/api/obsidian/vaults`| GET    | Detect available Obsidian vaults           |
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/api/plan` | GET | Returns `{ plan, origin, previousPlan, versionInfo }` |
+| `/api/plan/version` | GET | Fetch specific version (`?v=N`) |
+| `/api/plan/versions` | GET | List all versions of current plan |
+| `/api/plan/history` | GET | List all plans in current project |
+| `/api/approve` | POST | Approve plan (body: planSave, agentSwitch, obsidian, bear, feedback) |
+| `/api/deny` | POST | Deny plan (body: feedback, planSave) |
+| `/api/image` | GET | Serve image by path query param |
+| `/api/upload` | POST | Upload image, returns `{ path, originalName }` |
+| `/api/obsidian/vaults` | GET | Detect available Obsidian vaults |
 | `/api/reference/obsidian/files` | GET | List vault markdown files as nested tree (`?vaultPath=<path>`) |
-| `/api/reference/obsidian/doc`   | GET | Read a vault markdown file (`?vaultPath=<path>&path=<file>`) |
-| `/api/plan/vscode-diff` | POST   | Open diff in VS Code (body: baseVersion)   |
-| `/api/doc`              | GET    | Serve linked .md/.mdx file (`?path=<path>`) |
-| `/api/draft`          | GET/POST/DELETE | Auto-save annotation drafts to survive server crashes |
+| `/api/reference/obsidian/doc` | GET | Read a vault markdown file (`?vaultPath=<path>&path=<file>`) |
+| `/api/plan/vscode-diff` | POST | Open diff in VS Code (body: baseVersion) |
+| `/api/doc` | GET | Serve linked .md/.mdx file (`?path=<path>`) |
+| `/api/draft` | GET/POST/DELETE | Auto-save annotation drafts to survive server crashes |
 | `/api/editor-annotations` | GET | List editor annotations (VS Code only) |
 | `/api/editor-annotation` | POST/DELETE | Add or remove an editor annotation (VS Code only) |
 
 ### Review Server (`packages/server/review.ts`)
 
-| Endpoint              | Method | Purpose                                    |
-| --------------------- | ------ | ------------------------------------------ |
-| `/api/diff`           | GET    | Returns `{ rawPatch, gitRef, origin }`     |
-| `/api/file-content`   | GET    | Returns `{ oldContent, newContent }` for expandable diff context |
-| `/api/git-add`        | POST   | Stage/unstage a file (body: `{ filePath, undo? }`) |
-| `/api/feedback`       | POST   | Submit review (body: feedback, annotations, agentSwitch) |
-| `/api/image`          | GET    | Serve image by path query param            |
-| `/api/upload`         | POST   | Upload image, returns `{ path, originalName }` |
-| `/api/draft`          | GET/POST/DELETE | Auto-save annotation drafts to survive server crashes |
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/api/diff` | GET | Returns `{ rawPatch, gitRef, origin }` |
+| `/api/file-content` | GET | Returns `{ oldContent, newContent }` for expandable diff context |
+| `/api/git-add` | POST | Stage/unstage a file (body: `{ filePath, undo? }`) |
+| `/api/feedback` | POST | Submit review (body: feedback, annotations, agentSwitch) |
+| `/api/image` | GET | Serve image by path query param |
+| `/api/upload` | POST | Upload image, returns `{ path, originalName }` |
+| `/api/draft` | GET/POST/DELETE | Auto-save annotation drafts to survive server crashes |
 | `/api/editor-annotations` | GET | List editor annotations (VS Code only) |
 | `/api/editor-annotation` | POST/DELETE | Add or remove an editor annotation (VS Code only) |
 
 ### Annotate Server (`packages/server/annotate.ts`)
 
-| Endpoint              | Method | Purpose                                    |
-| --------------------- | ------ | ------------------------------------------ |
-| `/api/plan`           | GET    | Returns `{ plan, origin, mode: "annotate", filePath }` |
-| `/api/feedback`       | POST   | Submit annotations (body: feedback, annotations) |
-| `/api/image`          | GET    | Serve image by path query param            |
-| `/api/upload`         | POST   | Upload image, returns `{ path, originalName }` |
-| `/api/draft`          | GET/POST/DELETE | Auto-save annotation drafts to survive server crashes |
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/api/plan` | GET | Returns `{ plan, origin, mode: "annotate", filePath }` |
+| `/api/feedback` | POST | Submit annotations (body: feedback, annotations) |
+| `/api/image` | GET | Serve image by path query param |
+| `/api/upload` | POST | Upload image, returns `{ path, originalName }` |
+| `/api/draft` | GET/POST/DELETE | Auto-save annotation drafts to survive server crashes |
 
 All servers use random ports locally or fixed port (`19432`) in remote mode.
 
 ### Paste Service (`apps/paste-service/`)
 
-| Endpoint              | Method | Purpose                                    |
-| --------------------- | ------ | ------------------------------------------ |
-| `/api/paste`          | POST   | Store compressed plan data, returns `{ id }` |
-| `/api/paste/:id`      | GET    | Retrieve stored compressed data            |
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/api/paste` | POST | Store compressed plan data, returns `{ id }` |
+| `/api/paste/:id` | GET | Retrieve stored compressed data |
 
 Runs as a separate service on port `19433` (self-hosted) or as a Cloudflare Worker (hosted).
 
