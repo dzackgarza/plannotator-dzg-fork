@@ -112,6 +112,23 @@ effort.
 - Review the resulting git diff or commit diff to ensure the work actually
   matches the assigned task and did not drift or game the request.
 
+### Delegation loop
+
+Delegation is not fire-and-forget. The main agent must stay in the loop until
+the delegated task is either accepted or explicitly reassigned.
+
+- After delegation, continue checking the delegate on long intervals instead of
+  assuming the task will call back on its own.
+- Use long waits or status checks in a loop, on the order of 5-10 minutes when
+  appropriate for substantive work.
+- Do not end the main workflow merely because the delegated task is in
+  progress.
+- When the delegate finishes, review the work immediately.
+- If the work is insufficient, send revision instructions and continue the
+  wait-review loop until the result is acceptable.
+- Only after acceptance should the main agent commit the delegated change,
+  update tracker state, and move on to the next task in the poset.
+
 ### Status polling
 
 Timed waits are allowed only for status checks. They are not completion signals.
@@ -120,6 +137,8 @@ Timed waits are allowed only for status checks. They are not completion signals.
 - It does not mean the subagent failed.
 - It does not mean the task should be taken over locally.
 - It does not mean overlapping work is now acceptable.
+- It does not mean the main workflow should stop; continue the wait loop until
+  the delegate finishes or is explicitly replaced.
 
 ### Delegate replacement
 
@@ -155,6 +174,8 @@ Do not compress the task into a vague summary when delegating.
 - Delegates need the full task specification, not a compressed paraphrase.
 - Delegated work should be checkpointed before handoff and committed as a unit
   when returned so the diff can be reviewed against task compliance.
+- Delegated tasks do not reliably call back into the main workflow; the main
+  agent must keep polling, reviewing, and iterating until the task is accepted.
 
 ## Project Structure
 
