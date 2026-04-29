@@ -2,6 +2,43 @@
 
 A plan review UI for Claude Code that intercepts `ExitPlanMode` via hooks, letting users approve or request changes with annotated feedback. Also provides code review for git diffs and annotation of arbitrary markdown files.
 
+## Task Complexity And Model Routing
+
+Use a `complexityScore` on a 0-100 scale to decide which model and reasoning
+effort should own a task.
+
+### Complexity rubric
+
+- `0-20`: Trivial, tightly bounded, low ambiguity, easy to verify
+- `21-40`: Small implementation task, limited coupling, cheap mistakes
+- `41-60`: Moderate multi-step task, some refactor or coordination burden
+- `61-80`: High complexity, cross-module work, real ambiguity, meaningful
+  verification burden
+- `81-100`: Architecture-level or correctness-critical work with broad coupling,
+  recovery concerns, or expensive failure modes
+
+### Routing table
+
+- `0-20` → `gpt-5.4-mini` at `medium`
+- `21-45` → `gpt-5.4` at `medium`
+- `46-65` → `gpt-5.4` at `high`
+- `66-80` → `GPT-5.5` at `medium`
+- `81-90` → `GPT-5.5` at `high`
+- `91-100` → `GPT-5.5` at `xhigh`
+
+### Override rules
+
+- Prefer `GPT-5.5` earlier than the table suggests when failure creates
+  meaningful cleanup debt or negative progress.
+- Prefer `GPT-5.5` at `high` or `xhigh` for architecture, state machines,
+  concurrency, recovery, migration, delegation-heavy work, or tasks prone to
+  gaming, drift, or shallow shortcutting.
+- Prefer `gpt-5.4` when the work is fully specified, locally verifiable, and a
+  later `GPT-5.5` audit or patch pass is cheaper than running `GPT-5.5` as the
+  primary implementer for the entire task.
+- Do not route difficult tasks to older or weaker models just to save usage if
+  the likely result is review debt, rewrite debt, or false confidence.
+
 ## Project Structure
 
 ```
