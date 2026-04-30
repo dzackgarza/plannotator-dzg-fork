@@ -12,6 +12,7 @@
     "./remote": "./remote/index.ts",
     "./port": "./port.ts",
     "./browser": "./browser.ts",
+    "./state": "./state.ts",
     "./storage": "./storage.ts",
     "./git": "./git.ts",
     "./repo": "./repo.ts",
