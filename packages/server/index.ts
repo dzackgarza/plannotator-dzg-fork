@@ -44,6 +44,7 @@ export { getServerPort } from "./port";
 export { openBrowser } from "./browser";
 export * from "./integrations";
 export * from "./storage";
+export * from "./daemon";
 export { handleServerReady } from "./shared-handlers";
 export { type VaultNode, buildFileTree } from "./reference-handlers";
 
