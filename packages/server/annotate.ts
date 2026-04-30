@@ -16,6 +16,9 @@ import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDr
 import { handleDoc } from "./reference-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { dirname } from "path";
+import { createDaemonRouter, type DaemonRouterEvent } from "./daemon-router";
+import { createDaemonEventBus } from "./daemon-events";
+import { transition, type DaemonState, type FeedbackPayload } from "./state";
 
 // Re-export utilities
 export { getServerPort } from "./port";
@@ -80,22 +83,40 @@ export async function startAnnotateServer(
 
   const configuredPort = getServerPort();
   const draftKey = contentHash(markdown);
+  let currentState: DaemonState = {
+    schemaVersion: 1,
+    status: "awaiting-response",
+    document: {
+      id: `annotate-${crypto.randomUUID()}`,
+      mode: "annotate",
+      origin: origin ?? "claude-code",
+      content: markdown,
+      filePath,
+    },
+    feedback: null,
+  };
 
   // Detect repo info (cached for this session)
   const repoInfo = await getRepoInfo();
 
-  // Decision promise
-  let resolveDecision: (result: {
-    feedback: string;
-    annotations: unknown[];
-    cancelled?: boolean;
-  }) => void;
+  const eventBus = createDaemonEventBus();
   const decisionPromise = new Promise<{
     feedback: string;
     annotations: unknown[];
     cancelled?: boolean;
-  }>((resolve) => {
-    resolveDecision = resolve;
+  }>((resolveDecision) => {
+    const unsubscribe = eventBus.subscribe((event: DaemonRouterEvent) => {
+      if (event.type !== "resolved") {
+        return;
+      }
+
+      unsubscribe();
+      resolveDecision({
+        feedback: event.feedback.feedback,
+        annotations: event.feedback.annotations,
+        cancelled: event.feedback.cancelled,
+      });
+    });
   });
 
   // Start server with retry logic
@@ -103,11 +124,27 @@ export async function startAnnotateServer(
 
   // Handle CLI signals for graceful cancellation
   const handleSignal = () => {
+    if (currentState.status !== "awaiting-response") {
+      return;
+    }
+
     deleteDraft(draftKey);
-    resolveDecision({
+    const feedback: FeedbackPayload = {
+      approved: false,
       feedback: "Review cancelled by user via CLI signal.",
       annotations: [],
       cancelled: true,
+    };
+    const nextState = transition(currentState, {
+      type: "resolve",
+      feedback,
+    });
+
+    currentState = nextState;
+    eventBus.emit({
+      type: "resolved",
+      feedback,
+      state: nextState,
     });
   };
 
@@ -122,103 +159,58 @@ export async function startAnnotateServer(
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
+      const router = createDaemonRouter(
+        {
+          getState: () => currentState,
+          setState: (nextState) => {
+            currentState = nextState;
+          },
+          planHtml: htmlContent,
+          getAnnotateResponse: () => ({
+            repoInfo,
+          }),
+          onFeedback() {
+            deleteDraft(draftKey);
+          },
+          onCancel() {
+            deleteDraft(draftKey);
+          },
+          onReset() {
+            deleteDraft(draftKey);
+          },
+          handleFallback(req, url) {
+            if (url.pathname === "/api/image") {
+              return handleImage(req);
+            }
+
+            if (url.pathname === "/api/doc" && req.method === "GET") {
+              if (!url.searchParams.has("base")) {
+                const docUrl = new URL(req.url);
+                docUrl.searchParams.set("base", dirname(filePath));
+                return handleDoc(new Request(docUrl.toString()));
+              }
+              return handleDoc(req);
+            }
+
+            if (url.pathname === "/api/upload" && req.method === "POST") {
+              return handleUpload(req);
+            }
+
+            if (url.pathname === "/api/draft") {
+              if (req.method === "POST") return handleDraftSave(req, draftKey);
+              if (req.method === "DELETE") return handleDraftDelete(draftKey);
+              return handleDraftLoad(draftKey);
+            }
+
+            return undefined;
+          },
+        },
+        eventBus,
+      );
+
       server = Bun.serve({
         port: configuredPort,
-
-        async fetch(req) {
-          const url = new URL(req.url);
-
-          // API: Get plan content (reuse /api/plan so the plan editor UI works)
-          if (url.pathname === "/api/plan" && req.method === "GET") {
-            return Response.json({
-              plan: markdown,
-              origin,
-              mode: "annotate",
-              filePath,
-              repoInfo,
-            });
-          }
-
-          // API: Serve images (local paths or temp uploads)
-          if (url.pathname === "/api/image") {
-            return handleImage(req);
-          }
-
-          // API: Serve a linked markdown document
-          // Inject source file's directory as base for relative path resolution
-          if (url.pathname === "/api/doc" && req.method === "GET") {
-            if (!url.searchParams.has("base")) {
-              const docUrl = new URL(req.url);
-              docUrl.searchParams.set("base", dirname(filePath));
-              return handleDoc(new Request(docUrl.toString()));
-            }
-            return handleDoc(req);
-          }
-
-          // API: Upload image -> save to temp -> return path
-          if (url.pathname === "/api/upload" && req.method === "POST") {
-            return handleUpload(req);
-          }
-
-          // API: Annotation draft persistence
-          if (url.pathname === "/api/draft") {
-            if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
-            return handleDraftLoad(draftKey);
-          }
-
-          // API: Submit annotation feedback
-          if (url.pathname === "/api/feedback" && req.method === "POST") {
-            try {
-              const body = (await req.json()) as {
-                feedback: string;
-                annotations: unknown[];
-              };
-
-              deleteDraft(draftKey);
-              resolveDecision({
-                feedback: body.feedback || "",
-                annotations: body.annotations || [],
-              });
-
-              return Response.json({ ok: true });
-            } catch (err) {
-              const message =
-                err instanceof Error
-                  ? err.message
-                  : "Failed to process feedback";
-              return Response.json({ error: message }, { status: 500 });
-            }
-          }
-
-          // API: Cancel review
-          if (url.pathname === "/api/cancel" && req.method === "POST") {
-            deleteDraft(draftKey);
-            resolveDecision({
-              feedback: "Review cancelled by user.",
-              annotations: [],
-              cancelled: true,
-            });
-            return Response.json({ ok: true });
-          }
-
-          // API: Reset annotations
-          if (url.pathname === "/api/reset" && req.method === "POST") {
-            deleteDraft(draftKey);
-            return Response.json({ ok: true });
-          }
-
-          // API: Explicitly cancel and shutdown the server
-          if (url.pathname === "/api/shutdown" && req.method === "POST") {
-            setTimeout(cleanup, 10);
-            return Response.json({ ok: true });
-          }
-
-          // Serve embedded HTML for all other routes (SPA)
-          return new Response(htmlContent, {
-            headers: { "Content-Type": "text/html" },
-          });
-        },
+        fetch: router.fetch,
       });
 
       break; // Success, exit retry loop

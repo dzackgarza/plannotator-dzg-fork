@@ -8,7 +8,6 @@
  *   PLANNOTATOR_ORIGIN - Origin identifier ("claude-code" or "opencode")
  */
 
-import { resolve } from "path";
 import { getServerPort } from "./port";
 import { openEditorDiff } from "./ide";
 import {
@@ -20,7 +19,6 @@ import {
 } from "./integrations";
 import {
   generateSlug,
-  savePlan,
   saveAnnotations,
   saveFinalSnapshot,
   saveToHistory,
@@ -37,6 +35,9 @@ import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraft
 import { contentHash, deleteDraft } from "./draft";
 import { handleDoc, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc } from "./reference-handlers";
 import { createEditorAnnotationHandler } from "./editor-annotations";
+import { createDaemonRouter, type DaemonRouterEvent } from "./daemon-router";
+import { createDaemonEventBus } from "./daemon-events";
+import { transition, type DaemonState, type FeedbackPayload } from "./state";
 
 // Re-export utilities
 export { getServerPort } from "./port";
@@ -85,6 +86,15 @@ export interface ServerResult {
   stop: () => void;
 }
 
+type PlanDecisionResult = {
+  approved: boolean;
+  feedback?: string;
+  savedPath?: string;
+  agentSwitch?: string;
+  permissionMode?: string;
+  cancelled?: boolean;
+};
+
 // --- Server Implementation ---
 
 const MAX_RETRIES = 5;
@@ -129,34 +139,66 @@ export async function startPlannotatorServer(
     project,
   };
 
+  let currentState: DaemonState = {
+    schemaVersion: 1,
+    status: "awaiting-response",
+    document: {
+      id: slug,
+      mode: "plan",
+      origin: origin as "claude-code" | "opencode",
+      content: plan,
+    },
+    feedback: null,
+  };
 
-  // Decision promise
-  let resolveDecision: (result: {
-    approved: boolean;
-    feedback?: string;
-    savedPath?: string;
-    agentSwitch?: string;
-    permissionMode?: string;
-    cancelled?: boolean;
-  }) => void;
-  const decisionPromise = new Promise<{
-    approved: boolean;
-    feedback?: string;
-    savedPath?: string;
-    agentSwitch?: string;
-    permissionMode?: string;
-    cancelled?: boolean;
-  }>((resolve) => {
-    resolveDecision = resolve;
+  const eventBus = createDaemonEventBus();
+  let decisionMeta: Pick<
+    PlanDecisionResult,
+    "savedPath" | "agentSwitch" | "permissionMode"
+  > = {};
+  const decisionPromise = new Promise<PlanDecisionResult>((resolveDecision) => {
+    const unsubscribe = eventBus.subscribe((event: DaemonRouterEvent) => {
+      if (event.type !== "resolved") {
+        return;
+      }
+
+      unsubscribe();
+      resolveDecision({
+        approved: event.feedback.approved,
+        feedback: event.feedback.feedback,
+        savedPath: decisionMeta.savedPath,
+        agentSwitch: decisionMeta.agentSwitch ?? event.feedback.agentSwitch,
+        permissionMode:
+          decisionMeta.permissionMode ?? event.feedback.permissionMode,
+        cancelled: event.feedback.cancelled,
+      });
+    });
   });
 
   // Handle CLI signals for graceful cancellation
   const handleSignal = () => {
+    if (currentState.status !== "awaiting-response") {
+      return;
+    }
+
     deleteDraft(draftKey);
-    resolveDecision({
+    const feedback: FeedbackPayload = {
       approved: false,
       feedback: "Review cancelled by user via CLI signal.",
+      annotations: [],
       cancelled: true,
+    };
+    const nextState = transition(currentState, {
+      type: "resolve",
+      feedback,
+    });
+
+    decisionMeta = {};
+    currentState = nextState;
+    eventBus.emit({
+      type: "resolved",
+      feedback,
+      state: nextState,
     });
   };
 
@@ -164,7 +206,6 @@ export async function startPlannotatorServer(
   process.on("SIGTERM", handleSignal);
 
   // Cleanup: unregister signal handlers and stop the server.
-  // Used by both /api/shutdown (in-request path) and the returned stop() method.
   const cleanup = () => {
     process.off("SIGINT", handleSignal);
     process.off("SIGTERM", handleSignal);
@@ -176,206 +217,42 @@ export async function startPlannotatorServer(
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      server = Bun.serve({
-        port: configuredPort,
-
-        async fetch(req) {
-          const url = new URL(req.url);
-
-          // API: Get a specific plan version from history
-          if (url.pathname === "/api/plan/version") {
-            const vParam = url.searchParams.get("v");
-            if (!vParam) {
-              return new Response("Missing v parameter", { status: 400 });
-            }
-            const v = parseInt(vParam, 10);
-            if (isNaN(v) || v < 1) {
-              return new Response("Invalid version number", { status: 400 });
-            }
-            const content = await getPlanVersion(project, slug, v);
-            if (content === null) {
-              return Response.json({ error: "Version not found" }, { status: 404 });
-            }
-            return Response.json({ plan: content, version: v });
-          }
-
-          // API: List all versions for the current plan
-          if (url.pathname === "/api/plan/versions") {
-            return Response.json({
-              project,
-              slug,
-              versions: await listVersions(project, slug),
-            });
-          }
-
-          // API: List all plans in the current project
-          if (url.pathname === "/api/plan/history") {
-            return Response.json({
-              project,
-              plans: await listProjectPlans(project),
-            });
-          }
-
-          // API: Get plan content
-          if (url.pathname === "/api/plan") {
-            return Response.json({
-              plan,
-              origin,
-              permissionMode,
-              repoInfo,
-              previousPlan,
-              versionInfo,
-            });
-          }
-
-          // API: Serve a linked markdown document
-          if (url.pathname === "/api/doc" && req.method === "GET") {
-            return handleDoc(req);
-          }
-
-          // API: Serve images (local paths or temp uploads)
-          if (url.pathname === "/api/image") {
-            return handleImage(req);
-          }
-
-          // API: Upload image -> save to temp -> return path
-          if (url.pathname === "/api/upload" && req.method === "POST") {
-            return handleUpload(req);
-          }
-
-          // API: Open plan diff in VS Code
-          if (url.pathname === "/api/plan/vscode-diff" && req.method === "POST") {
-            try {
-              const body = (await req.json()) as { baseVersion: number };
-
-              if (!body.baseVersion) {
-                return Response.json({ error: "Missing baseVersion" }, { status: 400 });
-              }
-
-              const basePath = await getPlanVersionPath(project, slug, body.baseVersion);
-              if (!basePath) {
-                return Response.json({ error: `Version ${body.baseVersion} not found` }, { status: 404 });
-              }
-
-              const result = await openEditorDiff(basePath, currentPlanPath);
-              if ("error" in result) {
-                return Response.json({ error: result.error }, { status: 500 });
-              }
-              return Response.json({ ok: true });
-            } catch (err) {
-              const message = err instanceof Error ? err.message : "Failed to open VS Code diff";
-              return Response.json({ error: message }, { status: 500 });
-            }
-          }
-
-          // API: Detect Obsidian vaults
-          if (url.pathname === "/api/obsidian/vaults") {
-            return handleObsidianVaults();
-          }
-
-          // API: List Obsidian vault files as a tree
-          if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
-            return handleObsidianFiles(req);
-          }
-
-          // API: Read an Obsidian vault document
-          if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
-            return handleObsidianDoc(req);
-          }
-
-          // API: Get available agents (OpenCode only)
-          if (url.pathname === "/api/agents") {
-            return handleAgents(options.opencodeClient);
-          }
-
-          // API: Annotation draft persistence
-          if (url.pathname === "/api/draft") {
-            if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
-            return handleDraftLoad(draftKey);
-          }
-
-          // API: Editor annotations (VS Code extension)
-          const editorResponse = await editorAnnotations.handle(req, url);
-          if (editorResponse) return editorResponse;
-
-          // API: Save to notes (decoupled from approve/deny)
-          if (url.pathname === "/api/save-notes" && req.method === "POST") {
-            const results: { obsidian?: IntegrationResult; bear?: IntegrationResult } = {};
-
-            try {
-              const body = (await req.json()) as {
-                obsidian?: ObsidianConfig;
-                bear?: BearConfig;
-              };
-
-              if (body.obsidian?.vaultPath && body.obsidian?.plan) {
-                results.obsidian = await saveToObsidian(body.obsidian);
-                if (results.obsidian.success) {
-                  console.error(`[Obsidian] Saved plan to: ${results.obsidian.path}`);
-                } else {
-                  console.error(`[Obsidian] Save failed: ${results.obsidian.error}`);
-                }
-              }
-
-              if (body.bear?.plan) {
-                results.bear = await saveToBear(body.bear);
-                if (results.bear.success) {
-                  console.error(`[Bear] Saved plan to Bear`);
-                } else {
-                  console.error(`[Bear] Save failed: ${results.bear.error}`);
-                }
-              }
-            } catch (err) {
-              console.error(`[Save Notes] Error:`, err);
-              return Response.json({ error: "Save failed" }, { status: 500 });
-            }
-
-            return Response.json({ ok: true, results });
-          }
-
-          // API: Approve plan
-          if (url.pathname === "/api/approve" && req.method === "POST") {
-            // Check for note integrations and optional feedback
-            let feedback: string | undefined;
-            let agentSwitch: string | undefined;
-            let requestedPermissionMode: string | undefined;
-            let planSaveEnabled = true; // default to enabled for backwards compat
+      const router = createDaemonRouter(
+        {
+          getState: () => currentState,
+          setState: (nextState) => {
+            currentState = nextState;
+          },
+          planHtml: htmlContent,
+          getPlanResponse: () => ({
+            permissionMode,
+            repoInfo,
+            previousPlan,
+            versionInfo,
+          }),
+          async onApprove({ body, feedback }) {
+            decisionMeta = {
+              agentSwitch: feedback.agentSwitch,
+              permissionMode: feedback.permissionMode,
+            };
+            let savedPath: string | undefined;
+            let planSaveEnabled = true;
             let planSaveCustomPath: string | undefined;
+
             try {
-              const body = (await req.json().catch(() => ({}))) as {
+              const approveBody = body as {
                 obsidian?: ObsidianConfig;
                 bear?: BearConfig;
-                feedback?: string;
-                agentSwitch?: string;
                 planSave?: { enabled: boolean; customPath?: string };
-                permissionMode?: string;
               };
 
-              // Capture feedback if provided (for "approve with notes")
-              if (body.feedback) {
-                feedback = body.feedback;
+              if (approveBody.planSave !== undefined) {
+                planSaveEnabled = approveBody.planSave.enabled;
+                planSaveCustomPath = approveBody.planSave.customPath;
               }
 
-              // Capture agent switch setting for OpenCode
-              if (body.agentSwitch) {
-                agentSwitch = body.agentSwitch;
-              }
-
-              // Capture permission mode from client request (Claude Code)
-              if (body.permissionMode) {
-                requestedPermissionMode = body.permissionMode;
-              }
-
-              // Capture plan save settings
-              if (body.planSave !== undefined) {
-                planSaveEnabled = body.planSave.enabled;
-                planSaveCustomPath = body.planSave.customPath;
-              }
-
-              // Obsidian integration
-              if (body.obsidian?.vaultPath && body.obsidian?.plan) {
-                const result = await saveToObsidian(body.obsidian);
+              if (approveBody.obsidian?.vaultPath && approveBody.obsidian?.plan) {
+                const result = await saveToObsidian(approveBody.obsidian);
                 if (result.success) {
                   console.error(`[Obsidian] Saved plan to: ${result.path}`);
                 } else {
@@ -383,120 +260,237 @@ export async function startPlannotatorServer(
                 }
               }
 
-              // Bear integration
-              if (body.bear?.plan) {
-                const result = await saveToBear(body.bear);
+              if (approveBody.bear?.plan) {
+                const result = await saveToBear(approveBody.bear);
                 if (result.success) {
                   console.error(`[Bear] Saved plan to Bear`);
                 } else {
                   console.error(`[Bear] Save failed: ${result.error}`);
                 }
               }
-            } catch (err) {
-              // Don't block approval on integration errors
-              console.error(`[Integration] Error:`, err);
+            } catch (error) {
+              console.error(`[Integration] Error:`, error);
             }
 
-            // Save annotations and final snapshot (if enabled)
-            let savedPath: string | undefined;
             if (planSaveEnabled) {
-              const annotations = feedback || "";
-              if (annotations) {
-                saveAnnotations(slug, annotations, planSaveCustomPath);
+              if (feedback.feedback) {
+                saveAnnotations(slug, feedback.feedback, planSaveCustomPath);
               }
-              savedPath = saveFinalSnapshot(slug, "approved", plan, annotations, planSaveCustomPath);
-              
-              // Add feedback to history if feedback was provided
-              if (feedback) {
+
+              savedPath = saveFinalSnapshot(
+                slug,
+                "approved",
+                plan,
+                feedback.feedback,
+                planSaveCustomPath,
+              );
+
+              if (feedback.feedback) {
                 try {
                   const historyDir = await getHistoryDir(project);
-                  const msg = `Approve plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
+                  const msg = `Approve plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback.feedback}`;
                   await Bun.$`git commit --allow-empty -m ${msg}`.cwd(historyDir).quiet().nothrow();
-                } catch (e) {
-                  console.error("Failed to commit approval feedback to history", e);
+                } catch (error) {
+                  console.error("Failed to commit approval feedback to history", error);
                 }
               }
             }
 
-            // Clean up draft on successful submit
             deleteDraft(draftKey);
+            decisionMeta.savedPath = savedPath;
+            return { savedPath };
+          },
+          async onDeny({ body, feedback }) {
+            decisionMeta = {};
+            const denyBody = body as {
+              planSave?: { enabled: boolean; customPath?: string };
+            };
 
-            // Use permission mode from client request if provided, otherwise fall back to hook input
-            const effectivePermissionMode = requestedPermissionMode || permissionMode;
-            resolveDecision({ approved: true, feedback, savedPath, agentSwitch, permissionMode: effectivePermissionMode });
-            return Response.json({ ok: true, savedPath });
-          }
-
-          // API: Deny with feedback
-          if (url.pathname === "/api/deny" && req.method === "POST") {
-            let feedback = "Plan rejected by user";
-            let planSaveEnabled = true; // default to enabled for backwards compat
-            let planSaveCustomPath: string | undefined;
-            try {
-              const body = (await req.json()) as {
-                feedback?: string;
-                planSave?: { enabled: boolean; customPath?: string };
-              };
-              feedback = body.feedback || feedback;
-
-              // Capture plan save settings
-              if (body.planSave !== undefined) {
-                planSaveEnabled = body.planSave.enabled;
-                planSaveCustomPath = body.planSave.customPath;
-              }
-            } catch {
-              // Use default feedback
-            }
-
-            // Save annotations and final snapshot (if enabled)
             let savedPath: string | undefined;
+            const planSaveEnabled =
+              denyBody.planSave === undefined ? true : denyBody.planSave.enabled;
+            const planSaveCustomPath = denyBody.planSave?.customPath;
+
             if (planSaveEnabled) {
-              saveAnnotations(slug, feedback, planSaveCustomPath);
-              savedPath = saveFinalSnapshot(slug, "denied", plan, feedback, planSaveCustomPath);
-              
-              // Add feedback to history
+              saveAnnotations(slug, feedback.feedback, planSaveCustomPath);
+              savedPath = saveFinalSnapshot(
+                slug,
+                "denied",
+                plan,
+                feedback.feedback,
+                planSaveCustomPath,
+              );
+
               try {
                 const historyDir = await getHistoryDir(project);
-                const msg = `Reject plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback}`;
+                const msg = `Reject plan ${slug} (v${versionInfo.version})\n\nFeedback:\n${feedback.feedback}`;
                 await Bun.$`git commit --allow-empty -m ${msg}`.cwd(historyDir).quiet().nothrow();
-              } catch (e) {
-                console.error("Failed to commit rejection feedback to history", e);
+              } catch (error) {
+                console.error("Failed to commit rejection feedback to history", error);
               }
             }
 
             deleteDraft(draftKey);
-            resolveDecision({ approved: false, feedback, savedPath });
-            return Response.json({ ok: true, savedPath });
-          }
-
-          // API: Cancel review
-          if (url.pathname === "/api/cancel" && req.method === "POST") {
+            decisionMeta.savedPath = savedPath;
+            return { savedPath };
+          },
+          onCancel() {
+            decisionMeta = {};
             deleteDraft(draftKey);
-            resolveDecision({
-              approved: false,
-              feedback: "Review cancelled by user.",
-              cancelled: true,
-            });
-            return Response.json({ ok: true });
-          }
-
-          // API: Reset annotations
-          if (url.pathname === "/api/reset" && req.method === "POST") {
+          },
+          onReset() {
             deleteDraft(draftKey);
-            return Response.json({ ok: true });
-          }
+          },
+          async handleFallback(req, url) {
+            if (url.pathname === "/api/plan/version") {
+              const vParam = url.searchParams.get("v");
+              if (!vParam) {
+                return new Response("Missing v parameter", { status: 400 });
+              }
+              const v = parseInt(vParam, 10);
+              if (isNaN(v) || v < 1) {
+                return new Response("Invalid version number", { status: 400 });
+              }
+              const content = await getPlanVersion(project, slug, v);
+              if (content === null) {
+                return Response.json({ error: "Version not found" }, { status: 404 });
+              }
+              return Response.json({ plan: content, version: v });
+            }
 
-          // API: Explicitly cancel and shutdown the server
-          if (url.pathname === "/api/shutdown" && req.method === "POST") {
-            setTimeout(cleanup, 10);
-            return Response.json({ ok: true });
-          }
+            if (url.pathname === "/api/plan/versions") {
+              return Response.json({
+                project,
+                slug,
+                versions: await listVersions(project, slug),
+              });
+            }
 
-          // Serve embedded HTML for all other routes (SPA)
-          return new Response(htmlContent, {
-            headers: { "Content-Type": "text/html" },
-          });
+            if (url.pathname === "/api/plan/history") {
+              return Response.json({
+                project,
+                plans: await listProjectPlans(project),
+              });
+            }
+
+            if (url.pathname === "/api/doc" && req.method === "GET") {
+              return handleDoc(req);
+            }
+
+            if (url.pathname === "/api/image") {
+              return handleImage(req);
+            }
+
+            if (url.pathname === "/api/upload" && req.method === "POST") {
+              return handleUpload(req);
+            }
+
+            if (url.pathname === "/api/plan/vscode-diff" && req.method === "POST") {
+              try {
+                const body = (await req.json()) as { baseVersion: number };
+
+                if (!body.baseVersion) {
+                  return Response.json({ error: "Missing baseVersion" }, { status: 400 });
+                }
+
+                const basePath = await getPlanVersionPath(project, slug, body.baseVersion);
+                if (!basePath) {
+                  return Response.json(
+                    { error: `Version ${body.baseVersion} not found` },
+                    { status: 404 },
+                  );
+                }
+
+                const result = await openEditorDiff(basePath, currentPlanPath);
+                if ("error" in result) {
+                  return Response.json({ error: result.error }, { status: 500 });
+                }
+                return Response.json({ ok: true });
+              } catch (error) {
+                const message =
+                  error instanceof Error
+                    ? error.message
+                    : "Failed to open VS Code diff";
+                return Response.json({ error: message }, { status: 500 });
+              }
+            }
+
+            if (url.pathname === "/api/obsidian/vaults") {
+              return handleObsidianVaults();
+            }
+
+            if (
+              url.pathname === "/api/reference/obsidian/files" &&
+              req.method === "GET"
+            ) {
+              return handleObsidianFiles(req);
+            }
+
+            if (
+              url.pathname === "/api/reference/obsidian/doc" &&
+              req.method === "GET"
+            ) {
+              return handleObsidianDoc(req);
+            }
+
+            if (url.pathname === "/api/agents") {
+              return handleAgents(options.opencodeClient);
+            }
+
+            if (url.pathname === "/api/draft") {
+              if (req.method === "POST") return handleDraftSave(req, draftKey);
+              if (req.method === "DELETE") return handleDraftDelete(draftKey);
+              return handleDraftLoad(draftKey);
+            }
+
+            const editorResponse = await editorAnnotations.handle(req, url);
+            if (editorResponse) {
+              return editorResponse;
+            }
+
+            if (url.pathname === "/api/save-notes" && req.method === "POST") {
+              const results: { obsidian?: IntegrationResult; bear?: IntegrationResult } = {};
+
+              try {
+                const body = (await req.json()) as {
+                  obsidian?: ObsidianConfig;
+                  bear?: BearConfig;
+                };
+
+                if (body.obsidian?.vaultPath && body.obsidian?.plan) {
+                  results.obsidian = await saveToObsidian(body.obsidian);
+                  if (results.obsidian.success) {
+                    console.error(`[Obsidian] Saved plan to: ${results.obsidian.path}`);
+                  } else {
+                    console.error(`[Obsidian] Save failed: ${results.obsidian.error}`);
+                  }
+                }
+
+                if (body.bear?.plan) {
+                  results.bear = await saveToBear(body.bear);
+                  if (results.bear.success) {
+                    console.error(`[Bear] Saved plan to Bear`);
+                  } else {
+                    console.error(`[Bear] Save failed: ${results.bear.error}`);
+                  }
+                }
+              } catch (error) {
+                console.error(`[Save Notes] Error:`, error);
+                return Response.json({ error: "Save failed" }, { status: 500 });
+              }
+
+              return Response.json({ ok: true, results });
+            }
+
+            return undefined;
+          },
         },
+        eventBus,
+      );
+
+      server = Bun.serve({
+        port: configuredPort,
+        fetch: router.fetch,
       });
 
       break; // Success, exit retry loop

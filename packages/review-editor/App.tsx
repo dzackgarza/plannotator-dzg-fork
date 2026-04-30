@@ -507,7 +507,6 @@ const ReviewApp: React.FC = () => {
       });
       if (res.ok) {
         setSubmitted('feedback');
-        fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
       } else {
         throw new Error('Failed to send');
       }
@@ -563,7 +562,6 @@ const ReviewApp: React.FC = () => {
       });
       if (res.ok) {
         setSubmitted('approved');
-        fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
       } else {
         throw new Error('Failed to send');
       }
