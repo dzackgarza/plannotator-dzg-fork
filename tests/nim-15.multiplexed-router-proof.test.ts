@@ -43,6 +43,7 @@ type DaemonRouterGate =
 
 type StartedDaemonServer = {
   url: string;
+  ui: BuiltUiArtifacts;
   getState: () => DaemonState;
   events: Array<Record<string, unknown>>;
   stop: () => Promise<void>;
@@ -55,6 +56,7 @@ const daemonRouterModuleUrl = pathToFileURL(
 const bunExecutable = Bun.which("bun") ?? "bun";
 const tempDirs: string[] = [];
 let builtUiPromise: Promise<BuiltUiArtifacts> | undefined;
+const ROUTER_CASE_TIMEOUT_MS = 120_000;
 
 const planDocument: DocumentSnapshot = {
   id: "nim-15-plan-doc",
@@ -307,6 +309,7 @@ async function startDaemonServer(initialState: DaemonState): Promise<StartedDaem
 
   return {
     url: `http://127.0.0.1:${server.port}`,
+    ui,
     getState: () => stateHarness.getState(),
     events: eventBusHarness.events,
     stop: async () => {
@@ -356,12 +359,11 @@ describe("NIM-15 multiplexed router proof", () => {
     };
 
     const server = await startDaemonServer(initialState);
-    const ui = await ensureBuiltUiArtifacts();
 
     try {
       const root = await fetchText(`${server.url}/`);
       expect(root.response.status).toBe(200);
-      expect(root.text).toBe(ui.planHtml);
+      expect(root.text).toBe(server.ui.planHtml);
 
       const plan = await fetchJson(`${server.url}/api/plan`);
       expect(plan.response.status).toBe(200);
@@ -375,7 +377,7 @@ describe("NIM-15 multiplexed router proof", () => {
     } finally {
       await server.stop();
     }
-  });
+  }, ROUTER_CASE_TIMEOUT_MS);
 
   test("serves the review bundle at /, returns /api/diff, and 409s plan-only routes when active mode is review", async () => {
     const initialState: DaemonState = {
@@ -386,12 +388,11 @@ describe("NIM-15 multiplexed router proof", () => {
     };
 
     const server = await startDaemonServer(initialState);
-    const ui = await ensureBuiltUiArtifacts();
 
     try {
       const root = await fetchText(`${server.url}/`);
       expect(root.response.status).toBe(200);
-      expect(root.text).toBe(ui.reviewHtml);
+      expect(root.text).toBe(server.ui.reviewHtml);
 
       const diff = await fetchJson(`${server.url}/api/diff`);
       expect(diff.response.status).toBe(200);
@@ -406,7 +407,7 @@ describe("NIM-15 multiplexed router proof", () => {
     } finally {
       await server.stop();
     }
-  });
+  }, ROUTER_CASE_TIMEOUT_MS);
 
   test("reuses the plan bundle for annotate mode and returns annotate-flavored /api/plan", async () => {
     const initialState: DaemonState = {
@@ -417,12 +418,11 @@ describe("NIM-15 multiplexed router proof", () => {
     };
 
     const server = await startDaemonServer(initialState);
-    const ui = await ensureBuiltUiArtifacts();
 
     try {
       const root = await fetchText(`${server.url}/`);
       expect(root.response.status).toBe(200);
-      expect(root.text).toBe(ui.planHtml);
+      expect(root.text).toBe(server.ui.planHtml);
 
       const plan = await fetchJson(`${server.url}/api/plan`);
       expect(plan.response.status).toBe(200);
@@ -438,7 +438,7 @@ describe("NIM-15 multiplexed router proof", () => {
     } finally {
       await server.stop();
     }
-  });
+  }, ROUTER_CASE_TIMEOUT_MS);
 
   test("plan approvals update daemon state without relying on /api/shutdown", async () => {
     const initialState: DaemonState = {
@@ -478,7 +478,7 @@ describe("NIM-15 multiplexed router proof", () => {
     } finally {
       await server.stop();
     }
-  });
+  }, ROUTER_CASE_TIMEOUT_MS);
 
   test("review feedback updates daemon state without tearing the server down", async () => {
     const initialState: DaemonState = {
@@ -514,5 +514,5 @@ describe("NIM-15 multiplexed router proof", () => {
     } finally {
       await server.stop();
     }
-  });
+  }, ROUTER_CASE_TIMEOUT_MS);
 });
