@@ -49,6 +49,16 @@ type StateModule = {
   saveState: (state: DaemonState) => Promise<void> | void;
 };
 
+type StateModuleGate =
+  | {
+      available: true;
+      module: StateModule;
+    }
+  | {
+      available: false;
+      reason: string;
+    };
+
 type CommandResult = {
   exitCode: number;
   stdout: string;
@@ -149,19 +159,20 @@ function stateFilePath(homeDir: string): string {
   return join(homeDir, ".plannotator", "state.json");
 }
 
-async function importStateModule(): Promise<StateModule> {
+async function probeStateModule(): Promise<StateModuleGate> {
   let imported: unknown;
 
   try {
     imported = await import(stateModuleUrl);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      [
+    return {
+      available: false,
+      reason: [
         "NIM-14 proof expects packages/server/state.ts to exist and export transition(), loadState(), and saveState().",
         `Import failed: ${message}`,
       ].join("\n"),
-    );
+    };
   }
 
   const candidate = imported as Partial<StateModule>;
@@ -171,13 +182,20 @@ async function importStateModule(): Promise<StateModule> {
     typeof candidate.loadState !== "function" ||
     typeof candidate.saveState !== "function"
   ) {
-    throw new Error(
-      "packages/server/state.ts must export transition(), loadState(), and saveState().",
-    );
+    return {
+      available: false,
+      reason:
+        "packages/server/state.ts must export transition(), loadState(), and saveState().",
+    };
   }
 
-  return candidate as StateModule;
+  return {
+    available: true,
+    module: candidate as StateModule,
+  };
 }
+
+const stateModuleGate = await probeStateModule();
 
 async function runStateProgram(homeDir: string, source: string): Promise<CommandResult> {
   const proc = Bun.spawn({
@@ -278,6 +296,15 @@ function deepClone<T>(value: T): T {
 }
 
 describe("NIM-14 daemon state-machine proof", () => {
+  if (!stateModuleGate.available) {
+    test("requires packages/server/state.ts before the semantic proof cases activate", () => {
+      throw new Error(stateModuleGate.reason);
+    });
+    return;
+  }
+
+  const stateModule = stateModuleGate.module;
+
   test.each([
     {
       name: "plan review submission",
@@ -292,11 +319,10 @@ describe("NIM-14 daemon state-machine proof", () => {
       document: annotateDocument,
     },
   ])("accepts idle -> submit for $name", async ({ document }) => {
-    const { transition } = await importStateModule();
     const current = deepClone(idleState);
     const before = deepClone(current);
 
-    const next = transition(current, { type: "submit", document });
+    const next = stateModule.transition(current, { type: "submit", document });
 
     expect(current).toEqual(before);
     expect(next).toEqual({
@@ -339,11 +365,10 @@ describe("NIM-14 daemon state-machine proof", () => {
       feedback: cancelledAnnotateFeedback,
     },
   ])("accepts awaiting-response -> resolve for $name", async ({ current, feedback }) => {
-    const { transition } = await importStateModule();
     const frozenCurrent = deepClone(current);
     const before = deepClone(frozenCurrent);
 
-    const next = transition(frozenCurrent, { type: "resolve", feedback });
+    const next = stateModule.transition(frozenCurrent, { type: "resolve", feedback });
 
     expect(frozenCurrent).toEqual(before);
     expect(next).toEqual({
@@ -355,7 +380,6 @@ describe("NIM-14 daemon state-machine proof", () => {
   });
 
   test("accepts resolved -> clear so later submit/wait flows can reuse the daemon", async () => {
-    const { transition } = await importStateModule();
     const current: DaemonState = {
       schemaVersion: 1,
       status: "resolved",
@@ -364,7 +388,7 @@ describe("NIM-14 daemon state-machine proof", () => {
     };
     const before = deepClone(current);
 
-    const next = transition(current, { type: "clear" });
+    const next = stateModule.transition(current, { type: "clear" });
 
     expect(current).toEqual(before);
     expect(next).toEqual(idleState);
@@ -422,11 +446,10 @@ describe("NIM-14 daemon state-machine proof", () => {
       event: { type: "resolve", feedback: approvedPlanFeedback } satisfies StateEvent,
     },
   ])("rejects illegal transitions: $name", async ({ current, event }) => {
-    const { transition } = await importStateModule();
     const frozenCurrent = deepClone(current);
     const before = deepClone(frozenCurrent);
 
-    expect(() => transition(frozenCurrent, event)).toThrow(
+    expect(() => stateModule.transition(frozenCurrent, event)).toThrow(
       /illegal|invalid|conflict|state/i,
     );
     expect(frozenCurrent).toEqual(before);
