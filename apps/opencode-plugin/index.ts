@@ -14,32 +14,12 @@
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
 import {
-  startPlannotatorServer,
-  handleServerReady,
-} from "@plannotator/server";
-import {
-  startReviewServer,
-  handleReviewServerReady,
-} from "@plannotator/server/review";
-import {
-  startAnnotateServer,
-  handleAnnotateServerReady,
-} from "@plannotator/server/annotate";
-import {
+  CliTimeoutError,
   REVIEW_TOOL_DIFF_TYPES,
   runPlannotatorAnnotateTool,
   runPlannotatorReviewTool,
-  defaultAnnotateToolDependencies,
-  defaultReviewToolDependencies,
+  runPlannotatorSubmitCli,
 } from "./tool-helpers";
-
-// @ts-ignore - Bun import attribute for text
-import indexHtml from "./plannotator.html" with { type: "text" };
-const htmlContent = indexHtml as unknown as string;
-
-// @ts-ignore - Bun import attribute for text
-import reviewHtml from "./review-editor.html" with { type: "text" };
-const reviewHtmlContent = reviewHtml as unknown as string;
 
 const DEFAULT_PLAN_TIMEOUT_SECONDS = 345_600; // 96 hours
 
@@ -189,13 +169,8 @@ Do NOT proceed with implementation until your plan is approved.
           {
             client: ctx.client,
             directory: ctx.directory,
-            htmlContent: reviewHtmlContent,
           },
-          {
-            ...defaultReviewToolDependencies,
-            startReviewServer,
-            onReady: handleReviewServerReady,
-          },
+          { promptSessionOnCompletion: true },
         );
 
         ctx.client.app.log({
@@ -222,39 +197,28 @@ Do NOT proceed with implementation until your plan is approved.
         },
 
         async execute(args, context) {
-          const server = await startPlannotatorServer({
-            plan: args.plan,
-            origin: "opencode",
-            htmlContent,
-            opencodeClient: ctx.client,
-            commitMessage: args.commit_message,
-            onReady: handleServerReady,
-          });
-
           const timeoutSeconds = getPlanTimeoutSeconds();
           const timeoutMs = timeoutSeconds === null ? null : timeoutSeconds * 1000;
+          let result;
+          try {
+            result = await runPlannotatorSubmitCli(
+              {
+                plan: args.plan,
+                commit_message: args.commit_message,
+              },
+              {
+                client: ctx.client,
+                directory: ctx.directory,
+              },
+              timeoutMs,
+            );
+          } catch (error) {
+            if (error instanceof CliTimeoutError) {
+              return `[Plannotator] No response within ${timeoutSeconds} seconds. Please call submit_plan again.`;
+            }
 
-          const result = timeoutMs === null
-            ? await server.waitForDecision()
-            : await new Promise<Awaited<ReturnType<typeof server.waitForDecision>>>((resolve) => {
-                const timeoutId = setTimeout(
-                  () =>
-                    resolve({
-                      approved: false,
-                      feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
-                    }),
-                  timeoutMs
-                );
-
-                server.waitForDecision().then((r) => {
-                  clearTimeout(timeoutId);
-                  resolve(r);
-                });
-              });
-          
-          // Server will gracefully shut down via /api/shutdown call from UI
-          // Fallback stop in case UI disconnects without calling it
-          setTimeout(() => server.stop(), 10000);
+            throw error;
+          }
 
           if (result.cancelled) {
             return `Plan review cancelled by user.`;
@@ -298,7 +262,6 @@ Do NOT proceed with implementation until your plan is approved.
               return `Plan approved with notes!
 
 Plan Summary: ${args.summary}
-${result.savedPath ? `Saved to: ${result.savedPath}` : ""}
 
 ## Implementation Notes
 
@@ -311,11 +274,9 @@ Proceed with implementation, incorporating these notes where applicable.`;
 
             return `Plan approved!
 
-Plan Summary: ${args.summary}
-${result.savedPath ? `Saved to: ${result.savedPath}` : ""}`;
+Plan Summary: ${args.summary}`;
           } else {
             return `Plan needs revision.
-${result.savedPath ? `\nSaved to: ${result.savedPath}` : ""}
 
 The user has requested changes to your plan. Please review their feedback below and revise your plan accordingly.
 
@@ -345,14 +306,6 @@ Please revise your plan based on this feedback and call \`submit_plan\` again wh
             {
               client: ctx.client,
               directory: ctx.directory,
-              htmlContent: reviewHtmlContent,
-              getSharingEnabled,
-              getShareBaseUrl,
-            },
-            {
-              ...defaultReviewToolDependencies,
-              startReviewServer,
-              onReady: handleReviewServerReady,
             },
           );
         },
@@ -372,14 +325,6 @@ Please revise your plan based on this feedback and call \`submit_plan\` again wh
             {
               client: ctx.client,
               directory: ctx.directory,
-              htmlContent,
-              getSharingEnabled,
-              getShareBaseUrl,
-            },
-            {
-              ...defaultAnnotateToolDependencies,
-              startAnnotateServer,
-              onReady: handleAnnotateServerReady,
             },
           );
         },

@@ -1,15 +1,5 @@
 import type { ToolContext } from "@opencode-ai/plugin";
-import type {
-  AnnotateServerOptions,
-  AnnotateServerResult,
-} from "@plannotator/server/annotate";
-import type {
-  GitContext,
-  ReviewServerOptions,
-  ReviewServerResult,
-} from "@plannotator/server/review";
-import { getGitContext, runGitDiff } from "@plannotator/server/git";
-import { resolveMarkdownFile } from "@plannotator/server/resolve-file";
+import { spawn } from "node:child_process";
 
 export const REVIEW_TOOL_DIFF_TYPES = [
   "uncommitted",
@@ -34,73 +24,217 @@ type SessionPromptClient = {
   };
 };
 
-type ReviewServerStarter = (
-  options: ReviewServerOptions,
-) => Promise<ReviewServerResult>;
-
-type AnnotateServerStarter = (
-  options: AnnotateServerOptions,
-) => Promise<AnnotateServerResult>;
-
-export interface ReviewToolEnvironment {
-  client: SessionPromptClient;
-  directory: string;
-  htmlContent: string;
-}
-
-export interface AnnotateToolEnvironment {
-  client: SessionPromptClient;
-  directory: string;
-  htmlContent: string;
-}
-
-export interface ReviewToolDependencies {
-  getGitContext: (cwd?: string) => Promise<GitContext>;
-  runGitDiff: (
-    diffType: ReviewToolDiffType,
-    defaultBranch: string,
-    cwd?: string,
-  ) => Promise<{ patch: string; label: string; error?: string }>;
-  startReviewServer: ReviewServerStarter;
-  onReady: (url: string, isRemote: boolean, port: number) => void | Promise<void>;
-  sleep: (ms: number) => Promise<void>;
-}
-
-export interface AnnotateToolDependencies {
-  resolveMarkdownFile: typeof resolveMarkdownFile;
-  readFile: (filePath: string) => Promise<string>;
-  startAnnotateServer: AnnotateServerStarter;
-  onReady: (url: string, isRemote: boolean, port: number) => void | Promise<void>;
-  sleep: (ms: number) => Promise<void>;
-}
-
-export const defaultReviewToolDependencies: ReviewToolDependencies = {
-  getGitContext,
-  runGitDiff,
-  startReviewServer: async () => {
-    throw new Error("startReviewServer dependency not configured");
-  },
-  onReady() {},
-  sleep: Bun.sleep,
+export type PlannotatorCliVerdict = {
+  approved: boolean;
+  cancelled?: boolean;
+  feedback?: string;
+  mode: "plan" | "review" | "annotate";
+  agentSwitch?: string;
+  permissionMode?: string;
 };
 
-export const defaultAnnotateToolDependencies: AnnotateToolDependencies = {
-  resolveMarkdownFile,
-  readFile: (filePath) => Bun.file(filePath).text(),
-  startAnnotateServer: async () => {
-    throw new Error("startAnnotateServer dependency not configured");
-  },
-  onReady() {},
-  sleep: Bun.sleep,
+export interface PlannotatorToolEnvironment {
+  client: SessionPromptClient;
+  directory: string;
+}
+
+type CliResult = {
+  exitCode: number;
+  stderr: string;
+  stdout: string;
 };
+
+class CliTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CliTimeoutError";
+  }
+}
+
+function requirePlannotatorExecutable(): string {
+  const executable = Bun.which("plannotator");
+  if (!executable) {
+    throw new Error(
+      "Missing `plannotator` executable in PATH. Install the Plannotator CLI before using the OpenCode wrapper.",
+    );
+  }
+
+  return executable;
+}
+
+async function runPlannotatorCli(
+  args: string[],
+  directory: string,
+  options: {
+    stdinText?: string;
+    timeoutMs?: number | null;
+  } = {},
+): Promise<CliResult> {
+  const command = [requirePlannotatorExecutable(), ...args];
+  const child = spawn(command[0], command.slice(1), {
+    cwd: directory,
+    env: {
+      ...process.env,
+      PLANNOTATOR_CWD: directory,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+
+  if (options.stdinText !== undefined) {
+    child.stdin.write(options.stdinText);
+  }
+  child.stdin.end();
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const exitCode =
+      options.timeoutMs == null
+        ? await new Promise<number>((resolve, reject) => {
+            child.once("error", reject);
+            child.once("close", (code) => {
+              resolve(code ?? 1);
+            });
+          })
+        : await Promise.race<number>([
+            new Promise<number>((resolve, reject) => {
+              child.once("error", reject);
+              child.once("close", (code) => {
+                resolve(code ?? 1);
+              });
+            }),
+            new Promise<number>((_, reject) => {
+              timeoutId = setTimeout(() => {
+                try {
+                  child.kill("SIGTERM");
+                } catch {
+                  // The subprocess may have already exited.
+                }
+                reject(
+                  new CliTimeoutError(
+                    `Timed out waiting for plannotator ${args[0]} after ${options.timeoutMs}ms.`,
+                  ),
+                );
+              }, options.timeoutMs);
+            }),
+          ]);
+
+    return { exitCode, stdout, stderr };
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+function parseCliVerdict(stdout: string): PlannotatorCliVerdict {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    throw new Error("Plannotator CLI returned an empty verdict payload.");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to parse plannotator CLI verdict JSON: ${message}`);
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Plannotator CLI verdict payload must be a JSON object.");
+  }
+
+  const verdict = parsed as Record<string, unknown>;
+  const mode = verdict.mode;
+  if (mode !== "plan" && mode !== "review" && mode !== "annotate") {
+    throw new Error("Plannotator CLI verdict payload is missing a valid mode.");
+  }
+
+  if (typeof verdict.approved !== "boolean") {
+    throw new Error("Plannotator CLI verdict payload is missing boolean `approved`.");
+  }
+
+  const feedback =
+    verdict.feedback === undefined
+      ? undefined
+      : typeof verdict.feedback === "string"
+        ? verdict.feedback
+        : (() => {
+            throw new Error("Plannotator CLI verdict `feedback` must be a string when present.");
+          })();
+
+  const cancelled =
+    verdict.cancelled === undefined
+      ? undefined
+      : typeof verdict.cancelled === "boolean"
+        ? verdict.cancelled
+        : (() => {
+            throw new Error("Plannotator CLI verdict `cancelled` must be a boolean when present.");
+          })();
+
+  const agentSwitch =
+    verdict.agentSwitch === undefined
+      ? undefined
+      : typeof verdict.agentSwitch === "string"
+        ? verdict.agentSwitch
+        : (() => {
+            throw new Error("Plannotator CLI verdict `agentSwitch` must be a string when present.");
+          })();
+
+  const permissionMode =
+    verdict.permissionMode === undefined
+      ? undefined
+      : typeof verdict.permissionMode === "string"
+        ? verdict.permissionMode
+        : (() => {
+            throw new Error(
+              "Plannotator CLI verdict `permissionMode` must be a string when present.",
+            );
+          })();
+
+  return {
+    approved: verdict.approved,
+    cancelled,
+    feedback,
+    mode,
+    agentSwitch,
+    permissionMode,
+  };
+}
+
+function describeCliFailure(args: string[], result: CliResult): string {
+  const stderr = result.stderr.trim();
+  const stdout = result.stdout.trim();
+  return [
+    `plannotator ${args.join(" ")} failed with exit code ${result.exitCode}.`,
+    stderr ? `stderr:\n${stderr}` : null,
+    stdout ? `stdout:\n${stdout}` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n\n");
+}
 
 function buildReviewFeedbackMessage(
   approved: boolean,
   feedback: string,
 ): string {
-  return approved
-    ? "# Code Review\n\nCode review completed — no changes requested."
-    : `# Code Review Feedback\n\n${feedback}\n\nPlease address this feedback.`;
+  if (approved) {
+    return `# Code Review\n\nCode review completed with notes:\n\n${feedback}`;
+  }
+
+  return `# Code Review Feedback\n\n${feedback}\n\nPlease address this feedback.`;
 }
 
 function buildAnnotateFeedbackMessage(
@@ -110,197 +244,121 @@ function buildAnnotateFeedbackMessage(
   return `# Markdown Annotations\n\nFile: ${filePath}\n\n${feedback}\n\nPlease address the annotation feedback above.`;
 }
 
-function buildReviewToolResponse(url: string, diffType: ReviewToolDiffType): string {
-  return `Started code review server at ${url}
-
-Please share this URL with the user and ask them to review the ${diffType} diff. The UI will open in their browser. When they submit feedback, it will be sent back to this session.
-
-Wait for the user's submitted feedback before proceeding with any further implementation or follow-up response.`;
+async function maybePromptSession(
+  client: SessionPromptClient,
+  sessionID: string,
+  message: string,
+  agent?: string,
+): Promise<void> {
+  await client.session.prompt({
+    path: { id: sessionID },
+    body: {
+      ...(agent ? { agent } : {}),
+      parts: [{ type: "text", text: message }],
+    },
+  });
 }
 
-function buildAnnotateToolResponse(url: string, filePath: string): string {
-  return `Started annotation server at ${url}
+export async function runPlannotatorSubmitCli(
+  args: {
+    plan: string;
+    commit_message: string;
+  },
+  env: PlannotatorToolEnvironment,
+  timeoutMs: number | null,
+): Promise<PlannotatorCliVerdict> {
+  const stdinText = JSON.stringify({
+    tool_input: {
+      plan: args.plan,
+      commit_message: args.commit_message,
+    },
+  });
 
-Please share this URL with the user and ask them to review ${filePath}. The UI will open in their browser. When they submit feedback, it will be sent back to this session.
+  const result = await runPlannotatorCli(["submit", "--json"], env.directory, {
+    stdinText,
+    timeoutMs,
+  });
 
-Wait for the user's submitted feedback before proceeding with any further implementation or follow-up response.`;
-}
-
-function describeResolutionFailure(
-  resolved:
-    | Awaited<ReturnType<typeof resolveMarkdownFile>>,
-): string {
-  if (resolved.kind === "ambiguous") {
-    return `Could not start annotation: "${resolved.input}" matched multiple markdown files.
-
-Candidates:
-${resolved.matches.map((match) => `- ${match}`).join("\n")}
-
-Inspect the candidates and call \`plannotator_annotate\` again with a more specific path.`;
+  if (result.exitCode !== 0 && result.exitCode !== 1) {
+    throw new Error(describeCliFailure(["submit", "--json"], result));
   }
 
-  return `Could not start annotation: no markdown file matched "${resolved.input}".
-
-Search the repository for the correct markdown file and call \`plannotator_annotate\` again with that path.`;
-}
-
-async function forwardReviewFeedbackInBackground(
-  server: ReviewServerResult,
-  client: SessionPromptClient,
-  sessionID: string,
-): Promise<() => void> {
-  // Save stop callback to return immediately
-  const stopServer = () => server.stop();
-
-  (async () => {
-    try {
-      const result = await server.waitForDecision();
-      if (result.cancelled) {
-        await client.session.prompt({
-          path: { id: sessionID },
-          body: {
-            parts: [{ type: "text", text: "Code review cancelled by user." }],
-          },
-        });
-        return;
-      }
-      if (!result.feedback) {
-        return;
-      }
-
-      const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== "disabled";
-      const targetAgent = result.agentSwitch || "build";
-
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          ...(shouldSwitchAgent && { agent: targetAgent }),
-          parts: [
-            {
-              type: "text",
-              text: buildReviewFeedbackMessage(result.approved, result.feedback),
-            },
-          ],
-        },
-      });
-    } catch {
-      // Session may not be available once the review completes.
-    } finally {
-      // Graceful shutdown happens via /api/shutdown from the UI
-      // This is a fallback to ensure the server eventually stops
-      setTimeout(() => server.stop(), 10000);
-    }
-  })();
-
-  return stopServer;
-}
-
-async function forwardAnnotateFeedbackInBackground(
-  server: AnnotateServerResult,
-  client: SessionPromptClient,
-  sessionID: string,
-  filePath: string,
-): Promise<() => void> {
-  const stopServer = () => server.stop();
-
-  (async () => {
-    try {
-      const result = await server.waitForDecision();
-      if (result.cancelled) {
-        await client.session.prompt({
-          path: { id: sessionID },
-          body: {
-            parts: [{ type: "text", text: `Annotation of ${filePath} cancelled by user.` }],
-          },
-        });
-        return;
-      }
-      if (!result.feedback) {
-        return;
-      }
-
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          parts: [
-            {
-              type: "text",
-              text: buildAnnotateFeedbackMessage(filePath, result.feedback),
-            },
-          ],
-        },
-      });
-    } catch {
-      // Session may not be available once annotation completes.
-    } finally {
-      // Graceful shutdown happens via /api/shutdown from the UI
-      // This is a fallback to ensure the server eventually stops
-      setTimeout(() => server.stop(), 10000);
-    }
-  })();
-
-  return stopServer;
+  return parseCliVerdict(result.stdout);
 }
 
 export async function runPlannotatorReviewTool(
   args: { diff_type?: ReviewToolDiffType },
   context: ToolContext,
-  env: ReviewToolEnvironment,
-  deps: ReviewToolDependencies,
+  env: PlannotatorToolEnvironment,
+  options: { promptSessionOnCompletion?: boolean } = {},
 ): Promise<string> {
   const diffType = args.diff_type ?? "uncommitted";
+  const cliArgs = ["review", "--json", "--diff-type", diffType];
+  const result = await runPlannotatorCli(cliArgs, env.directory);
 
-  const gitContext = await deps.getGitContext(env.directory);
-  const diff = await deps.runGitDiff(diffType, gitContext.defaultBranch, env.directory);
+  if (result.exitCode !== 0 && result.exitCode !== 1) {
+    throw new Error(describeCliFailure(cliArgs, result));
+  }
 
-  const server = await deps.startReviewServer({
-    rawPatch: diff.patch,
-    gitRef: diff.label,
-    error: diff.error,
-    origin: "opencode",
-    diffType,
-    gitContext,
-    htmlContent: env.htmlContent,
-    opencodeClient: env.client,
-    cwd: env.directory,
-    onReady: deps.onReady,
-  });
+  const verdict = parseCliVerdict(result.stdout);
 
-  void forwardReviewFeedbackInBackground(
-    server,
-    env.client,
-    context.sessionID,
-  );
+  if (verdict.cancelled) {
+    if (options.promptSessionOnCompletion) {
+      await maybePromptSession(env.client, context.sessionID, "Code review cancelled by user.");
+    }
+    return "Code review cancelled by user.";
+  }
 
-  return buildReviewToolResponse(server.url, diffType);
+  if (verdict.feedback) {
+    const targetAgent =
+      verdict.agentSwitch && verdict.agentSwitch !== "disabled"
+        ? verdict.agentSwitch
+        : undefined;
+    const message = buildReviewFeedbackMessage(verdict.approved, verdict.feedback);
+    if (options.promptSessionOnCompletion) {
+      await maybePromptSession(env.client, context.sessionID, message, targetAgent);
+    }
+
+    return verdict.approved
+      ? `Code review completed with notes.\n\n${verdict.feedback}`
+      : `Code review feedback received.\n\n${verdict.feedback}`;
+  }
+
+  return "Code review completed with no requested changes.";
 }
 
 export async function runPlannotatorAnnotateTool(
   args: { file_path: string },
   context: ToolContext,
-  env: AnnotateToolEnvironment,
-  deps: AnnotateToolDependencies,
+  env: PlannotatorToolEnvironment,
+  options: { promptSessionOnCompletion?: boolean } = {},
 ): Promise<string> {
-  const resolved = await deps.resolveMarkdownFile(args.file_path, env.directory);
-  if (resolved.kind !== "found") {
-    return describeResolutionFailure(resolved);
+  const cliArgs = ["annotate", "--json", args.file_path];
+  const result = await runPlannotatorCli(cliArgs, env.directory);
+
+  if (result.exitCode !== 0 && result.exitCode !== 1) {
+    throw new Error(describeCliFailure(cliArgs, result));
   }
 
-  const markdown = await deps.readFile(resolved.path);
-  const server = await deps.startAnnotateServer({
-    markdown,
-    filePath: resolved.path,
-    origin: "opencode",
-    htmlContent: env.htmlContent,
-    onReady: deps.onReady,
-  });
+  const verdict = parseCliVerdict(result.stdout);
 
-  void forwardAnnotateFeedbackInBackground(
-    server,
-    env.client,
-    context.sessionID,
-    resolved.path,
-  );
+  if (verdict.cancelled) {
+    const message = `Annotation of ${args.file_path} cancelled by user.`;
+    if (options.promptSessionOnCompletion) {
+      await maybePromptSession(env.client, context.sessionID, message);
+    }
+    return message;
+  }
 
-  return buildAnnotateToolResponse(server.url, resolved.path);
+  if (verdict.feedback) {
+    const message = buildAnnotateFeedbackMessage(args.file_path, verdict.feedback);
+    if (options.promptSessionOnCompletion) {
+      await maybePromptSession(env.client, context.sessionID, message);
+    }
+    return `Annotation feedback received for ${args.file_path}.\n\n${verdict.feedback}`;
+  }
+
+  return `Annotation completed for ${args.file_path} with no requested changes.`;
 }
+
+export { CliTimeoutError };
