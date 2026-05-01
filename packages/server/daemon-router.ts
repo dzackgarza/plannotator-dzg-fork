@@ -21,6 +21,14 @@ type TransitionHookArgs = {
   request: Request;
 };
 
+type SubmitHookArgs = {
+  body: JsonObject;
+  currentState: DaemonState;
+  nextState: DaemonState;
+  request: Request;
+  uiUrl: string;
+};
+
 type ResetHookArgs = {
   currentState: DaemonState;
   request: Request;
@@ -40,6 +48,9 @@ export interface DaemonRouterState {
   getState?: () => DaemonState;
   handleFallback?: RouterFallback;
   loadState?: () => DaemonState;
+  onSubmit?: (
+    args: SubmitHookArgs,
+  ) => JsonObject | void | Promise<JsonObject | void>;
   onApprove?: (
     args: TransitionHookArgs,
   ) => JsonObject | void | Promise<JsonObject | void>;
@@ -71,6 +82,9 @@ export interface DaemonRouterEventBus {
   dispatch?: (event: DaemonRouterEvent) => void;
   emit?: (event: DaemonRouterEvent) => void;
   publish?: (event: DaemonRouterEvent) => void;
+  subscribe?: (
+    listener: (event: DaemonRouterEvent) => void,
+  ) => (() => void);
 }
 
 function getBundleHtml(
@@ -103,18 +117,20 @@ function writeDaemonState(
   stateAdapter: DaemonRouterState,
   nextState: DaemonState,
 ): void {
-  const writer =
-    stateAdapter.setState ??
-    stateAdapter.updateState ??
-    stateAdapter.saveState;
+  const mutator = stateAdapter.setState ?? stateAdapter.updateState;
+  const persister = stateAdapter.saveState;
 
-  if (!writer) {
+  if (!mutator && !persister) {
     throw new Error(
       "createDaemonRouter requires a state adapter with setState(), updateState(), or saveState().",
     );
   }
 
-  writer(nextState);
+  mutator?.(nextState);
+
+  if (persister && persister !== mutator) {
+    persister(nextState);
+  }
 }
 
 function publishDaemonEvent(
@@ -202,6 +218,25 @@ function toAnnotations(value: unknown): Array<Record<string, unknown>> {
   );
 }
 
+function isRecord(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isResolvedState(
+  state: DaemonState,
+): state is Extract<DaemonState, { status: "resolved" }> {
+  return state.status === "resolved";
+}
+
+function buildCancelledFeedback(message: string): FeedbackPayload {
+  return {
+    approved: false,
+    feedback: message,
+    annotations: [],
+    cancelled: true,
+  };
+}
+
 function resolveTransition(
   currentState: DaemonState,
   feedback: FeedbackPayload,
@@ -254,6 +289,89 @@ async function applyResolution(
   return Response.json({ ok: true, ...responsePayload });
 }
 
+function resolveSubmitTransition(
+  currentState: DaemonState,
+  document: unknown,
+): DaemonState | Response {
+  try {
+    return transition(currentState, {
+      type: "submit",
+      document,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 400 });
+  }
+}
+
+function resolveClearTransition(currentState: DaemonState): DaemonState | Response {
+  try {
+    return transition(currentState, {
+      type: "clear",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 409 });
+  }
+}
+
+function resolveForcedClearTransition(
+  currentState: DaemonState,
+): DaemonState | Response {
+  return resolveTransition(
+    currentState,
+    buildCancelledFeedback(
+      "Submission cleared before a verdict was delivered.",
+    ),
+  );
+}
+
+function toSseChunk(event: string, payload: JsonObject): Uint8Array {
+  const encoder = new TextEncoder();
+  return encoder.encode(
+    `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,
+  );
+}
+
+function buildVerdictPayload(
+  resolvedState: Extract<DaemonState, { status: "resolved" }>,
+): JsonObject {
+  return {
+    feedback: resolvedState.feedback,
+    document: resolvedState.document,
+    state: resolvedState,
+  };
+}
+
+function maybeConsumeCancelledVerdict(
+  stateAdapter: DaemonRouterState,
+  resolvedState: Extract<DaemonState, { status: "resolved" }>,
+): void {
+  if (resolvedState.feedback.cancelled !== true) {
+    return;
+  }
+
+  const currentState = readDaemonState(stateAdapter);
+  if (!isResolvedState(currentState)) {
+    return;
+  }
+
+  if (currentState.document.id !== resolvedState.document.id) {
+    return;
+  }
+
+  if (currentState.feedback.cancelled !== true) {
+    return;
+  }
+
+  const nextState = resolveClearTransition(currentState);
+  if (nextState instanceof Response) {
+    throw new Error("Cancelled verdict could not be consumed.");
+  }
+
+  writeDaemonState(stateAdapter, nextState);
+}
+
 function serveActiveBundle(
   stateAdapter: DaemonRouterState,
   currentState: DaemonState,
@@ -281,12 +399,60 @@ export function createDaemonRouter(
   eventBus: DaemonRouterEventBus,
 ) {
   return {
-    async fetch(req: Request): Promise<Response> {
+    async fetch(
+      req: Request,
+      server?: { timeout?: (request: Request, seconds: number) => void },
+    ): Promise<Response> {
       const url = new URL(req.url);
       const currentState = readDaemonState(stateAdapter);
 
       if (url.pathname === "/") {
         return serveActiveBundle(stateAdapter, currentState);
+      }
+
+      if (url.pathname === "/api/state" && req.method === "GET") {
+        return Response.json(currentState);
+      }
+
+      if (url.pathname === "/api/submit" && req.method === "POST") {
+        if (currentState.status !== "idle") {
+          return Response.json(
+            {
+              error: `Daemon cannot accept a new submission while state is ${currentState.status}.`,
+            },
+            { status: 409 },
+          );
+        }
+
+        const body = await readJsonBody(req).catch(() => ({}));
+        if (!isRecord(body.document)) {
+          return Response.json(
+            { error: "submit requires a document object." },
+            { status: 400 },
+          );
+        }
+
+        const nextState = resolveSubmitTransition(currentState, body.document);
+        if (nextState instanceof Response) {
+          return nextState;
+        }
+
+        const uiUrl = new URL("/", req.url).toString();
+        const responsePayload =
+          (await stateAdapter.onSubmit?.({
+            body,
+            currentState,
+            nextState,
+            request: req,
+            uiUrl,
+          })) ?? {};
+
+        writeDaemonState(stateAdapter, nextState);
+
+        return Response.json(
+          { ok: true, state: nextState, url: uiUrl, ...responsePayload },
+          { status: 202 },
+        );
       }
 
       if (url.pathname === "/api/plan" && req.method === "GET") {
@@ -325,6 +491,113 @@ export function createDaemonRouter(
           gitRef: document.gitRef,
           origin: document.origin,
           ...getReviewPayload(stateAdapter),
+        });
+      }
+
+      if (url.pathname === "/api/wait" && req.method === "GET") {
+        if (currentState.status === "idle") {
+          return Response.json(
+            { error: "No active or buffered daemon verdict is available." },
+            { status: 409 },
+          );
+        }
+
+        const subscribe = eventBus.subscribe;
+        if (!subscribe) {
+          throw new Error(
+            "createDaemonRouter requires an event bus with subscribe() for /api/wait.",
+          );
+        }
+
+        server?.timeout?.(req, 0);
+
+        let unsubscribe = () => {};
+        let closed = false;
+        let detachAbortHandler = () => {};
+
+        const stream = new ReadableStream({
+          start(controller) {
+            const cleanup = () => {
+              if (closed) {
+                return;
+              }
+
+              closed = true;
+              unsubscribe();
+              detachAbortHandler();
+            };
+
+            const finish = () => {
+              cleanup();
+              controller.close();
+            };
+
+            const handleAbort = () => {
+              cleanup();
+            };
+
+            if (req.signal.aborted) {
+              handleAbort();
+              return;
+            }
+
+            req.signal.addEventListener("abort", handleAbort, { once: true });
+            detachAbortHandler = () => {
+              req.signal.removeEventListener("abort", handleAbort);
+            };
+
+            const deliver = (
+              resolvedState: Extract<DaemonState, { status: "resolved" }>,
+            ) => {
+              if (closed) {
+                return;
+              }
+
+              try {
+                controller.enqueue(
+                  toSseChunk("verdict", buildVerdictPayload(resolvedState)),
+                );
+              } catch {
+                cleanup();
+                return;
+              }
+
+              maybeConsumeCancelledVerdict(stateAdapter, resolvedState);
+              finish();
+            };
+
+            if (isResolvedState(currentState)) {
+              deliver(currentState);
+              return;
+            }
+
+            controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+
+            unsubscribe = subscribe((event) => {
+              if (event.type !== "resolved") {
+                return;
+              }
+
+              deliver(event.state);
+            });
+          },
+          cancel() {
+            if (closed) {
+              return;
+            }
+
+            closed = true;
+            unsubscribe();
+            detachAbortHandler();
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+            "Content-Type": "text/event-stream",
+          },
         });
       }
 
@@ -430,6 +703,56 @@ export function createDaemonRouter(
           {},
           feedback,
         );
+      }
+
+      if (url.pathname === "/api/clear" && req.method === "POST") {
+        const body = await readJsonBody(req).catch(() => ({}));
+        const force = body.force === true;
+
+        if (currentState.status === "idle") {
+          return Response.json(
+            { error: "Daemon state is already idle." },
+            { status: 409 },
+          );
+        }
+
+        if (currentState.status === "awaiting-response") {
+          if (!force) {
+            return Response.json(
+              {
+                error:
+                  "Refusing to clear an in-flight submission without { force: true }.",
+              },
+              { status: 409 },
+            );
+          }
+
+          const nextState = resolveForcedClearTransition(currentState);
+          if (nextState instanceof Response) {
+            return nextState;
+          }
+
+          writeDaemonState(stateAdapter, nextState);
+          publishDaemonEvent(eventBus, {
+            type: "resolved",
+            feedback: nextState.feedback,
+            state: nextState,
+          });
+
+          return Response.json({
+            ok: true,
+            forced: true,
+            state: nextState,
+          });
+        }
+
+        const nextState = resolveClearTransition(currentState);
+        if (nextState instanceof Response) {
+          return nextState;
+        }
+
+        writeDaemonState(stateAdapter, nextState);
+        return Response.json({ ok: true, state: nextState });
       }
 
       if (url.pathname === "/api/reset" && req.method === "POST") {
