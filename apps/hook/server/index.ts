@@ -16,6 +16,7 @@
  */
 
 import { daemonStatus, openBrowser, startDaemonDetached, stopDaemon } from "@plannotator/server";
+import { notifyDocumentEnteredReview } from "@plannotator/server/notify";
 import { resolveMarkdownFile } from "@plannotator/server/resolve-file";
 import { listSessions, registerSession, unregisterSession } from "@plannotator/server/sessions";
 import {
@@ -1064,6 +1065,11 @@ async function startForegroundDaemon(): Promise<void> {
         if (body.noBrowser !== true) {
           await openBrowser(uiUrl);
         }
+
+        await notifyDocumentEnteredReview({
+          documentTitle: documentTitle(nextState.document),
+          daemonUrl: uiUrl,
+        });
 
         return { opened: body.noBrowser !== true };
       },
