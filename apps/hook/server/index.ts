@@ -53,6 +53,10 @@ const planHtmlContent = planHtml as unknown as string;
 import reviewHtml from "../dist/review.html" with { type: "text" };
 const reviewHtmlContent = reviewHtml as unknown as string;
 
+// @ts-ignore - Bun import attribute for json
+import workspacePackageJson from "../../../package.json" with { type: "json" };
+const PACKAGE_VERSION = (workspacePackageJson as { version?: string }).version ?? "0.0.0";
+
 type VerdictPayload = {
   feedback?: {
     approved: boolean;
@@ -294,6 +298,11 @@ function parseCommand(argv: string[]): string[] {
 
   if (takeFlag(args, "--help") || takeFlag(args, "-h")) {
     console.log(usageText());
+    process.exit(EXIT_OK);
+  }
+
+  if (takeFlag(args, "--version") || takeFlag(args, "-V")) {
+    console.log(PACKAGE_VERSION);
     process.exit(EXIT_OK);
   }
 
