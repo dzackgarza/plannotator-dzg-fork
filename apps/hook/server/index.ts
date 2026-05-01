@@ -113,10 +113,10 @@ function usageText(): string {
     "  plannotator start",
     "  plannotator stop",
     "  plannotator status",
-    "  plannotator submit [file] [--mode plan|annotate] [--no-browser] [--commit-message <msg>]",
-    "  plannotator review [--diff-type <uncommitted|staged|unstaged|last-commit|branch|worktree:...>]",
-    "  plannotator annotate <file>",
-    "  plannotator wait",
+    "  plannotator submit [file] [--mode plan|annotate] [--no-browser] [--commit-message <msg>] [--json]",
+    "  plannotator review [--diff-type <uncommitted|staged|unstaged|last-commit|branch|worktree:...>] [--json]",
+    "  plannotator annotate <file> [--json]",
+    "  plannotator wait [--json]",
     "  plannotator clear [--force]",
     "  plannotator open",
     "",
@@ -579,6 +579,36 @@ function renderPlainVerdict(payload: VerdictPayload): never {
   process.exit(feedback.approved ? EXIT_OK : EXIT_DENIED);
 }
 
+function renderJsonVerdict(payload: VerdictPayload): never {
+  const feedback = payload.feedback;
+  const document = payload.document;
+
+  if (!feedback || !document) {
+    fail("Daemon returned an incomplete JSON verdict payload.", EXIT_DAEMON_FAILURE);
+  }
+
+  console.log(
+    JSON.stringify({
+      approved: feedback.approved,
+      cancelled: feedback.cancelled === true,
+      feedback: feedback.feedback,
+      mode: document.mode,
+      agentSwitch: feedback.agentSwitch,
+      permissionMode: feedback.permissionMode,
+    }),
+  );
+
+  if (feedback.cancelled) {
+    process.exit(EXIT_DENIED);
+  }
+
+  if (document.mode === "review" || document.mode === "annotate") {
+    process.exit(EXIT_OK);
+  }
+
+  process.exit(feedback.approved ? EXIT_OK : EXIT_DENIED);
+}
+
 function renderHookVerdict(payload: VerdictPayload): never {
   const feedback = payload.feedback;
   if (!feedback) {
@@ -633,6 +663,7 @@ async function submitDocument(
     noBrowser?: boolean;
     permissionMode?: string;
     commitMessage?: string;
+    verdictFormat?: "plain" | "json";
   } = {},
 ): Promise<never> {
   await withDaemon(async () => {
@@ -663,6 +694,10 @@ async function submitDocument(
       const message = error instanceof Error ? error.message : String(error);
       fail(`${message}\nUse plannotator wait to reconnect or plannotator open to reopen the session.`, EXIT_DAEMON_FAILURE);
     });
+
+    if (options.verdictFormat === "json") {
+      renderJsonVerdict(verdict);
+    }
 
     renderPlainVerdict(verdict);
   });
@@ -819,12 +854,18 @@ async function runOpen(): Promise<never> {
   fail("runOpen returned unexpectedly.", EXIT_DAEMON_FAILURE);
 }
 
-async function runWait(): Promise<never> {
+async function runWait(args: string[]): Promise<never> {
+  const json = takeFlag(args, "--json");
+
   await withDaemon(async () => {
     const verdict = await waitForVerdict().catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       fail(message, EXIT_DAEMON_FAILURE);
     });
+    if (json) {
+      renderJsonVerdict(verdict);
+    }
+
     renderPlainVerdict(verdict);
   });
 
@@ -869,6 +910,7 @@ async function runClear(args: string[]): Promise<never> {
 }
 
 async function runReview(args: string[]): Promise<never> {
+  const json = takeFlag(args, "--json");
   const diffType = (takeOption(args, "--diff-type") as DiffType | undefined) ?? "uncommitted";
   const gitContext = await getGitContext();
   const defaultBranch = gitContext.defaultBranch || (await getDefaultBranch());
@@ -881,11 +923,12 @@ async function runReview(args: string[]): Promise<never> {
     gitRef: label,
   };
 
-  await submitDocument(document);
+  await submitDocument(document, { verdictFormat: json ? "json" : "plain" });
   fail("runReview returned unexpectedly.", EXIT_DAEMON_FAILURE);
 }
 
 async function runAnnotate(args: string[]): Promise<never> {
+  const json = takeFlag(args, "--json");
   let filePath = args[0];
   if (!filePath) {
     fail("Usage: plannotator annotate <file.md>", EXIT_ILLEGAL_STATE);
@@ -915,11 +958,14 @@ async function runAnnotate(args: string[]): Promise<never> {
     origin: "claude-code",
     content: markdown,
     filePath: absolutePath,
+  }, {
+    verdictFormat: json ? "json" : "plain",
   });
   fail("runAnnotate returned unexpectedly.", EXIT_DAEMON_FAILURE);
 }
 
 async function runSubmit(args: string[]): Promise<never> {
+  const json = takeFlag(args, "--json");
   const mode = takeOption(args, "--mode") ?? "plan";
   const noBrowser = takeFlag(args, "--no-browser");
   const commitMessage = takeOption(args, "--commit-message");
@@ -943,6 +989,7 @@ async function runSubmit(args: string[]): Promise<never> {
     noBrowser,
     permissionMode: source.permissionMode,
     commitMessage: commitMessage ?? source.commitMessage,
+    verdictFormat: json ? "json" : "plain",
   });
   fail("runSubmit returned unexpectedly.", EXIT_DAEMON_FAILURE);
 }
@@ -1296,7 +1343,7 @@ async function main(): Promise<void> {
       await runAnnotate(args.slice(1));
       return;
     case "wait":
-      await runWait();
+      await runWait(args.slice(1));
       return;
     case "clear":
       await runClear(args.slice(1));
