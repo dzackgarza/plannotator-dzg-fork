@@ -57,32 +57,22 @@ class CliTimeoutError extends Error {
   }
 }
 
-function resolveRepoLocalCliEntrypoint(directory: string): string | null {
-  const candidates = [
-    join(directory, "apps", "hook", "server", "index.ts"),
-    join(import.meta.dir, "..", "hook", "server", "index.ts"),
-    join(import.meta.dir, "..", "..", "hook", "server", "index.ts"),
-  ];
+function resolveRepoLocalCliEntrypoint(directory: string): string {
+  const entrypoint = join(directory, "apps", "hook", "server", "index.ts");
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
+  if (!existsSync(entrypoint)) {
+    throw new Error(
+      `Expected workspace-local plannotator CLI entrypoint at ${entrypoint}, but it does not exist.`,
+    );
   }
 
-  return null;
+  return entrypoint;
 }
 
 function resolvePlannotatorCommand(directory: string): CliCommand {
   const entrypoint = resolveRepoLocalCliEntrypoint(directory);
-  if (entrypoint) {
-    return {
-      argv: [process.execPath, "run", entrypoint],
-    };
-  }
-
   return {
-    argv: ["plannotator"],
+    argv: [process.execPath, "run", entrypoint],
   };
 }
 

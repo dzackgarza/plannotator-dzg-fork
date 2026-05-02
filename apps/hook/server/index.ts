@@ -1126,6 +1126,8 @@ async function startForegroundDaemon(): Promise<void> {
         void notifyDocumentEnteredReview({
           documentTitle: documentTitle(nextState.document),
           daemonUrl: uiUrl,
+        }).catch((error) => {
+          console.error("notifyDocumentEnteredReview failed:", error);
         });
 
         return { opened: body.noBrowser !== true };
