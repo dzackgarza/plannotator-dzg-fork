@@ -1,5 +1,7 @@
 import type { ToolContext } from "@opencode-ai/plugin";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 export const REVIEW_TOOL_DIFF_TYPES = [
   "uncommitted",
@@ -44,6 +46,10 @@ type CliResult = {
   stdout: string;
 };
 
+type CliCommand = {
+  argv: string[];
+};
+
 class CliTimeoutError extends Error {
   constructor(message: string) {
     super(message);
@@ -51,15 +57,33 @@ class CliTimeoutError extends Error {
   }
 }
 
-function requirePlannotatorExecutable(): string {
-  const executable = Bun.which("plannotator");
-  if (!executable) {
-    throw new Error(
-      "Missing `plannotator` executable in PATH. Install the Plannotator CLI before using the OpenCode wrapper.",
-    );
+function resolveRepoLocalCliEntrypoint(directory: string): string | null {
+  const candidates = [
+    join(directory, "apps", "hook", "server", "index.ts"),
+    join(import.meta.dir, "..", "hook", "server", "index.ts"),
+    join(import.meta.dir, "..", "..", "hook", "server", "index.ts"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
   }
 
-  return executable;
+  return null;
+}
+
+function resolvePlannotatorCommand(directory: string): CliCommand {
+  const entrypoint = resolveRepoLocalCliEntrypoint(directory);
+  if (entrypoint) {
+    return {
+      argv: [process.execPath, "run", entrypoint],
+    };
+  }
+
+  return {
+    argv: ["plannotator"],
+  };
 }
 
 async function runPlannotatorCli(
@@ -70,8 +94,8 @@ async function runPlannotatorCli(
     timeoutMs?: number | null;
   } = {},
 ): Promise<CliResult> {
-  const command = [requirePlannotatorExecutable(), ...args];
-  const child = spawn(command[0], command.slice(1), {
+  const command = resolvePlannotatorCommand(directory);
+  const child = spawn(command.argv[0], [...command.argv.slice(1), ...args], {
     cwd: directory,
     env: {
       ...process.env,

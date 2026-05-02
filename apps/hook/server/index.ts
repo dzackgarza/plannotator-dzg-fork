@@ -1122,7 +1122,8 @@ async function startForegroundDaemon(): Promise<void> {
           await openBrowser(uiUrl);
         }
 
-        await notifyDocumentEnteredReview({
+        // Session registration must not wait on notification side effects.
+        void notifyDocumentEnteredReview({
           documentTitle: documentTitle(nextState.document),
           daemonUrl: uiUrl,
         });
