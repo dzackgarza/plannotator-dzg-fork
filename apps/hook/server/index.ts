@@ -241,11 +241,20 @@ function getDaemonLockfilePath(): string {
   return join(getDaemonDir(), "daemon.lock");
 }
 
+function isCompiledPlannotatorEntrypoint(modulePath: string): boolean {
+  return modulePath.startsWith("/$bunfs/");
+}
+
 function buildDaemonCommand(): string[] {
+  const entrypointPath = fileURLToPath(import.meta.url);
+  if (isCompiledPlannotatorEntrypoint(entrypointPath)) {
+    return [process.execPath, "daemon", "start", "--foreground"];
+  }
+
   return [
     process.execPath,
     "run",
-    fileURLToPath(import.meta.url),
+    entrypointPath,
     "daemon",
     "start",
     "--foreground",

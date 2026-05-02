@@ -241,6 +241,10 @@ function parseMainInvocation(argv1: string | undefined): string | null {
   return resolve(argv1);
 }
 
+function isCompiledBunModulePath(modulePath: string): boolean {
+  return modulePath.startsWith("/$bunfs/");
+}
+
 function waitForSpawn(child: ReturnType<typeof spawn>): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
     const handleSpawn = () => {
@@ -428,9 +432,13 @@ export async function startDaemonDetached(
 
   try {
     const daemonScriptPath = fileURLToPath(import.meta.url);
+    const compiledDaemon = isCompiledBunModulePath(daemonScriptPath);
+    const helperArgs = compiledDaemon
+      ? [RUN_DAEMON_SENTINEL, JSON.stringify(normalized)]
+      : [daemonScriptPath, RUN_DAEMON_SENTINEL, JSON.stringify(normalized)];
     const daemon = spawn(
       process.execPath,
-      [daemonScriptPath, RUN_DAEMON_SENTINEL, JSON.stringify(normalized)],
+      helperArgs,
       {
         cwd: normalized.cwd,
         detached: true,
@@ -528,9 +536,17 @@ export async function daemonStatus(
 
 const currentModulePath = fileURLToPath(import.meta.url);
 const mainModulePath = parseMainInvocation(process.argv[1]);
+const compiledSentinelInvocation =
+  isCompiledBunModulePath(currentModulePath) &&
+  process.argv[1] === RUN_DAEMON_SENTINEL;
+const sourceSentinelInvocation =
+  mainModulePath === currentModulePath &&
+  process.argv[2] === RUN_DAEMON_SENTINEL;
 
-if (mainModulePath === currentModulePath && process.argv[2] === RUN_DAEMON_SENTINEL) {
-  const serializedOptions = process.argv[3];
+if (compiledSentinelInvocation || sourceSentinelInvocation) {
+  const serializedOptions = compiledSentinelInvocation
+    ? process.argv[2]
+    : process.argv[3];
   if (typeof serializedOptions !== "string" || serializedOptions.length === 0) {
     throw new Error("Missing serialized daemon options.");
   }
