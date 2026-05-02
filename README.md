@@ -1,6 +1,6 @@
 # Plannotator (dzg fork)
 
-Interactive plan and code review for AI coding agents. Exposes a local HTTP server with an annotation UI; the agent blocks on a tool call until the user approves, denies, or cancels.
+Interactive plan and code review for AI coding agents. A persistent local daemon serves the annotation UI; the agent blocks on a CLI call until the user approves, denies, or cancels.
 
 This is a personal fork of [backnotprop/plannotator](https://github.com/backnotprop/plannotator) with additional features tracked on this branch.
 
@@ -72,16 +72,14 @@ Blocks the agent until the user approves or rejects the plan in the browser UI.
 
 **Behavior:**
 
-1. Starts a local HTTP server serving the plan annotation UI.
-2. Opens the browser on the local machine.
-3. Blocks `waitForDecision()` until the user acts.
+1. Shells out to `plannotator submit --json` which forwards the plan to the local daemon.
+2. The daemon opens the browser on the local machine.
+3. Blocks until the user acts in the UI.
 4. On **approve**: returns a success string; if the user added annotations, they are included as implementation notes.
 5. On **approve with agent switch**: additionally calls `session.prompt` with `noReply: true` to hand off to the target agent (e.g. `build`), and cycles the TUI display.
 6. On **deny**: returns the user's structured feedback and instructs the agent to revise and resubmit.
 7. On **cancel**: returns `"Plan review cancelled by user."`.
-8. On **timeout**: returns a timeout message and releases the port. The agent must call `submit_plan` again.
-
-The server shuts down deterministically via `POST /api/shutdown` sent by the UI after the user acts. A 10-second fallback `setTimeout` stops the server if the UI disconnects without calling shutdown.
+8. On **timeout**: returns a timeout message. The agent must call `submit_plan` again.
 
 **Plan history:** Each submission saves `~/.plannotator/plans/{project}/{slug}.md` and commits it to a git repo in that directory. The commit message comes from `commit_message`. Approve/deny events are recorded as empty git commits with feedback in the message body.
 
@@ -105,7 +103,7 @@ Opens the current git diff in a code review UI. The agent does not block — fee
 | `last-commit` | `git diff HEAD~1 HEAD` |
 | `branch` | `git diff {default-branch}...HEAD` |
 
-**Behavior:** The tool returns immediately after starting the server. A background IIFE posts the user's feedback back to the session via `session.prompt` once the review is complete. If the user cancels, the agent receives `"Code review cancelled by user."`.
+**Behavior:** Shells out to `plannotator review --json`. Returns immediately; a background task posts feedback back to the session via `session.prompt` once the review is complete. If the user cancels, the agent receives `"Code review cancelled by user."`.
 
 ---
 
@@ -117,7 +115,7 @@ Opens a markdown file in the annotation UI. Non-blocking — same async feedback
 |---|---|---|---|
 | `file_path` | string | yes | Absolute or relative path to the markdown file |
 
-**Behavior:** Reads the file, serves it in the annotation UI. Feedback (inline annotations + global notes) is forwarded to the session asynchronously. On cancel: `"Annotation of {file_path} cancelled by user."`.
+**Behavior:** Shells out to `plannotator annotate <file> --json`. Feedback (inline annotations + global notes) is forwarded to the session asynchronously. On cancel: `"Annotation of {file_path} cancelled by user."`.
 
 ---
 
@@ -144,10 +142,12 @@ The injected text instructs the agent to call `submit_plan` before implementatio
 
 ### How it works
 
-The `plannotator` CLI is invoked by a `PermissionRequest` hook on the `ExitPlanMode` tool. Claude Code pipes the hook event JSON to stdin; the CLI reads the plan content, serves the UI, and writes an approve/deny JSON decision to stdout.
+The `plannotator` CLI is invoked by a `PermissionRequest` hook on the `ExitPlanMode` tool. Claude Code pipes the hook event JSON to stdin; the CLI extracts the plan, forwards it to the local daemon via `plannotator submit`, and writes an approve/deny JSON decision to stdout when the daemon returns the verdict.
 
 ```
-Claude Code → ExitPlanMode → PermissionRequest hook → plannotator CLI (stdin/stdout)
+Claude Code → ExitPlanMode → PermissionRequest hook → plannotator CLI → daemon → browser UI
+                                                       ↑ stdin JSON                verdict ↓
+                                                       ← ← ← hook decision JSON ← ← ← ← ←
 ```
 
 **Decision output format:**
@@ -190,28 +190,40 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
+### Daemon lifecycle
+
+The daemon is a persistent background process that owns the HTTP server and browser session. Start it once; it survives across multiple `submit` / `review` / `annotate` calls.
+
+```bash
+plannotator daemon start        # start daemon in background, print port + URL
+plannotator daemon status       # show running/idle/not-running state
+plannotator daemon stop         # graceful shutdown
+```
+
+Aliases: `plannotator start` / `plannotator stop` / `plannotator status`.
+
 ### CLI subcommands
 
 ```
-plannotator                   Plan review (default — reads hook event from stdin)
-plannotator review            Code review (uncommitted changes)
-plannotator annotate <file>   Markdown annotation
-plannotator sessions          List active server sessions
-plannotator sessions --open [N]  Reopen session N in browser
-plannotator sessions --clean  Remove stale session files
+plannotator daemon start [--foreground]   Start daemon (background by default)
+plannotator daemon stop                   Stop daemon
+plannotator daemon status                 Show daemon state
+
+plannotator submit [file] [--mode plan|annotate] [--no-browser] [--commit-message <msg>] [--json]
+                                          Submit a plan or markdown file for review
+plannotator review [--diff-type <type>] [--json]
+                                          Open current git diff in code review UI
+plannotator annotate <file> [--json]      Open markdown file in annotation UI
+plannotator wait [--json]                 Wait for a verdict from the current active session
+plannotator clear [--force]               Reset daemon to idle state
+plannotator open                          Reopen the active session in the browser
 ```
+
+`--diff-type` values: `uncommitted` (default), `staged`, `unstaged`, `last-commit`, `branch`, `worktree:<branch>`.
 
 `<file>` accepts an `@`-prefixed path (Claude Code file reference syntax); the `@` is stripped automatically.
 
-### Server ports
-
-| Mode | Default port | Remote default |
-|---|---|---|
-| Plan review | Random ephemeral | `19432` |
-| Code review | Random ephemeral | random |
-| Annotate | Random ephemeral | random |
-
-The server binds to `localhost` only and opens the browser automatically.
+The daemon binds to `localhost` only and opens the browser automatically. Port is random by default; set `PLANNOTATOR_PORT` to fix it.
 
 ### Plan history
 
@@ -227,21 +239,24 @@ Enabled in the UI settings panel. When active, approved plans are also written t
 
 ---
 
-## Server HTTP API
+## Daemon HTTP API
 
-All server types expose the same API surface. The embedded UI communicates with `localhost` only.
+The daemon exposes a REST API on `localhost`. The embedded UI and CLI both communicate with it.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Serves the embedded UI (SPA) |
 | `GET` | `/api/plan` | Returns plan content, version info, diff vs. previous version |
-| `POST` | `/api/approve` | User approves; resolves `waitForDecision()` with `approved: true` |
+| `POST` | `/api/approve` | User approves; resolves the blocked CLI with `approved: true` |
 | `POST` | `/api/deny` | User denies with feedback; resolves with `approved: false` |
-| `POST` | `/api/cancel` | User cancels; resolves with `cancelled: true`; stops server |
-| `POST` | `/api/reset` | Clears draft annotation state; session continues |
-| `POST` | `/api/shutdown` | UI signals server to stop after response is flushed |
+| `GET` | `/api/status` | Returns daemon state (`idle`, `active`, `verdict_ready`) |
+| `POST` | `/api/submit` | Submit a document (plan, review, annotate) to the daemon |
+| `GET` | `/api/wait` | Long-poll for the verdict of the current active session |
+| `POST` | `/api/clear` | Reset daemon to idle state |
+| `GET` | `/api/diff` | Returns git diff for code review mode |
+| `POST` | `/api/feedback` | Submit review/annotate feedback to the waiting CLI |
+| `GET/POST/DELETE` | `/api/draft` | Auto-save annotation drafts |
 
-Signal handling: `SIGINT` and `SIGTERM` resolve `waitForDecision()` with `cancelled: true` and stop the server. All shutdown paths (UI, signal, returned `stop()`) call the same `cleanup()` function so signal listeners are always unregistered.
+The daemon survives CLI disconnections. If the agent process dies mid-review, run `plannotator wait` from a new terminal to collect the buffered verdict once the user acts in the browser.
 
 ---
 
@@ -262,10 +277,14 @@ The `slug` format is `{heading-kebab}-YYYY-MM-DD`. If the plan has no heading, t
 
 ## Fork-specific changes (vs. upstream)
 
-- **Deterministic server teardown**: all shutdown paths (`/api/shutdown`, SIGINT/SIGTERM, `stop()`) call a shared `cleanup()` function — no bare `setTimeout` as the primary stop mechanism.
-- **Cancel / Reset UI actions**: Cancel button resolves `waitForDecision()` immediately and frees the port; Reset button clears draft annotations without ending the session.
+- **Persistent daemon model**: replaces ephemeral per-invocation servers with a single background daemon process. The CLI shells out to the daemon; browser sessions survive CLI disconnections.
+- **Buffered verdict recovery**: if the agent process dies mid-review, run `plannotator wait` from a fresh terminal to collect the verdict after the user acts. The daemon holds the result until consumed.
+- **Thin agent wrappers**: the Claude Code hook shim and OpenCode plugin both shell out to the `plannotator` CLI instead of hosting embedded servers. Agent-specific policy stays in the integration layer; the daemon is general-purpose.
+- **`--version` / `--help`**: compiled binary now exits 0 on both flags and prints the workspace version string.
+- **`--json` output mode**: `submit`, `review`, `annotate`, and `wait` accept `--json` to emit structured verdict JSON for programmatic consumers.
+- **Cancel / Reset UI actions**: Cancel button resolves the blocked CLI immediately; Reset button clears draft annotations without ending the session.
 - **Git-based plan versioning**: replaces file-numbered `001.md / 002.md` history with a single-file-per-slug git repo under `~/.plannotator/plans/{project}/`.
 - **`commit_message` parameter on `submit_plan`**: agents document what changed since the previous version.
-- **Signal cleanup fix**: `/api/shutdown` now runs the same `cleanup()` as `stop()`, preventing stale SIGINT/SIGTERM listeners across multiple server starts.
+
 Open issues for remaining work:
 - [#9](https://github.com/dzackgarza/plannotator-dzg-fork/issues/9) — Thread agent identity into git commit authorship
