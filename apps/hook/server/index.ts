@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * Plannotator CLI for Claude Code
  *
@@ -114,22 +115,160 @@ function usageText(): string {
     "plannotator — daemon-backed plan & code review CLI",
     "",
     "Usage:",
-    "  plannotator daemon start [--foreground]",
-    "  plannotator daemon stop",
-    "  plannotator daemon status",
-    "  plannotator submit <file> [--mode plan|review|annotate] [--no-browser] [--commit-message <msg>] [--json]",
-    "  plannotator review [--diff-type <uncommitted|staged|unstaged|last-commit|branch|worktree:...>] [--json]",
+    "  plannotator submit <file> [--commit-message <msg>] [--json]",
+    "  plannotator review [--diff-type <type>] [--json]",
     "  plannotator annotate <file> [--json]",
     "  plannotator wait [--request-id <id>] [--json]",
+    "  plannotator status",
     "  plannotator clear [--force]",
     "  plannotator open",
+    "  plannotator install-skill --local | --global",
+    "  plannotator daemon start|stop|status",
     "",
-    "Exit codes:",
-    "  0   approved or command completed successfully",
-    "  1   denied, stopped daemon status, or daemon-delivered cancellation",
-    "  2   collision or other illegal-state rejection",
-    "  3   daemon failure or lost daemon connection after retry",
-    "  130 local CLI cancellation via signal",
+    "Common commands:",
+    "  submit <file>     Submit plan for review (daemon auto-starts)",
+    "  status            Check daemon and workflow state",
+    "  wait              Block until user makes decision",
+    "  install-skill     Install workflow skill for agents",
+    "",
+    "Run 'plannotator --help' for detailed workflow guide.",
+    "Run 'plannotator <command> --help' for command-specific help.",
+  ].join("\n");
+}
+
+function helpText(): string {
+  return [
+    "plannotator — CLI-first iterative planning workflow",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                        GOLDEN WORKFLOW",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "1. Create durable plan file:",
+    "   mkdir -p .agents/plans",
+    "   echo '# Feature Plan...' > .agents/plans/feature.md",
+    "",
+    "2. Submit plan (daemon auto-starts, opens browser):",
+    "   plannotator submit .agents/plans/feature.md",
+    "",
+    "3. User reviews in browser → approve/deny/cancel",
+    "",
+    "4. If denied (exit 1), EDIT plan file (don't rewrite!):",
+    "   - Read feedback from output",
+    "   - Make targeted edits to address feedback",
+    "   - Resubmit: plannotator submit .agents/plans/feature.md",
+    "   - Tool shows diff view (+/-/~ changes) to user",
+    "",
+    "5. Repeat until approved (exit 0)",
+    "",
+    "6. Proceed with implementation",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                         EXIT CODES",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "  0    Approved / Success",
+    "       → Plan accepted, proceed with implementation",
+    "       → Command completed successfully",
+    "",
+    "  1    Denied / Needs Revision",
+    "       → User provided feedback, revise and resubmit",
+    "       → Don't rewrite - EDIT specific sections",
+    "       → Tool tracks versions and shows diffs automatically",
+    "",
+    "  2    Collision / Illegal State",
+    "       → Another plan is active (check: plannotator status)",
+    "       → Clear if needed: plannotator clear --force",
+    "",
+    "  3    Daemon Failure",
+    "       → Daemon crashed or connection lost",
+    "       → Restart: plannotator daemon stop && plannotator submit ...",
+    "",
+    "  130  Cancelled (Ctrl+C)",
+    "       → User interrupted CLI, workflow still active",
+    "       → Reconnect: plannotator wait",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                      CHECKING STATE",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "Check what's happening:",
+    "  plannotator status",
+    "",
+    "Output shows:",
+    "  - Daemon status (running/stopped)",
+    "  - Workflow state (idle/awaiting-response/awaiting-revision)",
+    "  - Active document (if any)",
+    "  - Browser URL to resume review",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                    KEY PRINCIPLES",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "✓ EDIT, don't rewrite plans",
+    "  - User sees diff view in browser",
+    "  - Incremental changes are easier to understand",
+    "  - Tool tracks versions automatically",
+    "",
+    "✓ No timeouts on waits",
+    "  - User can take hours drafting feedback",
+    "  - 'plannotator wait' blocks until decision",
+    "",
+    "✓ Submit auto-starts daemon",
+    "  - Don't manually start: plannotator daemon start",
+    "  - Just submit, daemon starts if needed",
+    "",
+    "✓ Background terminal recommended",
+    "  - Run submit in PTY/background terminal",
+    "  - Continue other work while waiting",
+    "  - Poll status or wait for callback",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                   INSTALL WORKFLOW SKILL",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "For AI agents using this tool, install the workflow skill:",
+    "",
+    "  Local (repo-specific):",
+    "    plannotator install-skill --local",
+    "    → Installs to ./.agents/skills/plannotator-workflow.md",
+    "",
+    "  Global (all projects):",
+    "    plannotator install-skill --global",
+    "    → Installs to ~/.agents/skills/plannotator-workflow.md",
+    "",
+    "The skill explains:",
+    "  - CLI-first workflow via bunx (zero install)",
+    "  - Durable plan file strategy",
+    "  - Edit vs rewrite patterns",
+    "  - Revision cycle best practices",
+    "  - Post-approval workflow",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                      QUICK EXAMPLES",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "Submit plan:",
+    "  plannotator submit plan.md",
+    "",
+    "Via bunx (no install):",
+    "  bunx github:dzackgarza/plannotator-dzg-fork submit plan.md",
+    "",
+    "Check status:",
+    "  plannotator status",
+    "",
+    "Wait for decision:",
+    "  plannotator wait",
+    "",
+    "Code review:",
+    "  plannotator review",
+    "",
+    "Clear stuck workflow:",
+    "  plannotator clear --force",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "Full documentation: https://github.com/dzackgarza/plannotator-dzg-fork",
   ].join("\n");
 }
 
@@ -308,7 +447,7 @@ function parseCommand(argv: string[]): string[] {
   }
 
   if (takeFlag(args, "--help") || takeFlag(args, "-h")) {
-    console.log(usageText());
+    console.log(helpText());
     process.exit(EXIT_OK);
   }
 
@@ -962,6 +1101,64 @@ async function runOpen(): Promise<never> {
   fail("runOpen returned unexpectedly.", EXIT_DAEMON_FAILURE);
 }
 
+async function runInstallSkill(args: string[]): Promise<never> {
+  const hasLocal = args.includes("--local");
+  const hasGlobal = args.includes("--global");
+
+  if (!hasLocal && !hasGlobal) {
+    fail(
+      [
+        "Error: Must specify --local or --global",
+        "",
+        "Usage:",
+        "  plannotator install-skill --local   (installs to ./.agents/skills/)",
+        "  plannotator install-skill --global  (installs to ~/.agents/skills/)",
+      ].join("\n"),
+      EXIT_ILLEGAL_STATE,
+    );
+  }
+
+  if (hasLocal && hasGlobal) {
+    fail("Error: Cannot specify both --local and --global", EXIT_ILLEGAL_STATE);
+  }
+
+  // Determine source and destination paths
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = join(scriptDir, "../../..");
+  const skillSource = join(repoRoot, "SKILL.md");
+
+  if (!existsSync(skillSource)) {
+    fail(`Error: SKILL.md not found at ${skillSource}`, EXIT_DAEMON_FAILURE);
+  }
+
+  const targetDir = hasLocal
+    ? join(process.cwd(), ".agents/skills")
+    : join(homedir(), ".agents/skills");
+  const targetPath = join(targetDir, "plannotator-workflow.md");
+
+  // Create target directory
+  mkdirSync(targetDir, { recursive: true });
+
+  // Copy skill file
+  const skillContent = readFileSync(skillSource, "utf8");
+  writeFileSync(targetPath, skillContent, "utf8");
+
+  const location = hasLocal ? "local (./.agents/skills/)" : "global (~/.agents/skills/)";
+  console.log(`✓ Installed plannotator workflow skill to ${location}`);
+  console.log(`  ${targetPath}`);
+  console.log("");
+  console.log("The skill explains:");
+  console.log("  • CLI-first workflow via bunx (zero install)");
+  console.log("  • Durable plan file strategy");
+  console.log("  • Edit vs rewrite patterns");
+  console.log("  • Revision cycle best practices");
+  console.log("  • Post-approval workflow");
+  console.log("");
+  console.log("Agents should read this skill before using plannotator.");
+
+  process.exit(EXIT_OK);
+}
+
 async function resolveWaitRequestId(requestId?: string): Promise<string | undefined> {
   if (requestId) {
     return requestId;
@@ -1475,7 +1672,24 @@ async function startForegroundDaemon(): Promise<void> {
 async function main(): Promise<void> {
   const args = parseCommand(process.argv.slice(2));
 
+  // No arguments: show informative usage
   if (args.length === 0) {
+    console.log(usageText());
+    console.log("");
+    console.log("Run via bunx (no install needed):");
+    console.log("  bunx github:dzackgarza/plannotator-dzg-fork submit plan.md");
+    console.log("");
+    console.log("Getting started:");
+    console.log("  1. Create plan: echo '# Plan...' > plan.md");
+    console.log("  2. Submit: bunx github:dzackgarza/plannotator-dzg-fork submit plan.md");
+    console.log("  3. Review in browser, approve/deny");
+    console.log("");
+    console.log("Run 'plannotator --help' for detailed workflow guide.");
+    process.exit(0);
+  }
+
+  // Hook mode: when stdin is a plan from Claude Code
+  if (args.length === 0 && !process.stdin.isTTY) {
     await submitPlanFromHook();
     return;
   }
@@ -1529,6 +1743,9 @@ async function main(): Promise<void> {
       return;
     case "open":
       await runOpen();
+      return;
+    case "install-skill":
+      await runInstallSkill(args.slice(1));
       return;
     default:
       fail(usageText(), EXIT_ILLEGAL_STATE);

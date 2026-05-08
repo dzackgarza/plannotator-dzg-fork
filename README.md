@@ -6,22 +6,58 @@ This is a personal fork of [backnotprop/plannotator](https://github.com/backnotp
 
 ---
 
-## Installation (this fork)
+## Architecture
 
-This fork is not published to npm or the Claude Code plugin marketplace. Install from source:
+**The CLI is the primary interface.** All integrations (Claude Code hooks, OpenCode plugins) shell out to the same `plannotator` binary. This keeps the workflow harness-agnostic and maintainable.
+
+```
+User's agent (Claude Code / OpenCode / custom)
+    ↓ shells out to
+plannotator CLI (submit / review / annotate / wait)
+    ↓ HTTP to
+Local daemon (persistent state machine + browser UI)
+    ↓ blocks until
+User acts in browser
+    ↓ returns
+Exit code + feedback to agent
+```
+
+---
+
+## Installation
+
+### Option 1: bunx (no installation)
+
+Run directly from GitHub:
+
+```bash
+bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
+bunx github:dzackgarza/plannotator-dzg-fork review
+bunx github:dzackgarza/plannotator-dzg-fork status
+```
+
+Add to shell rc for convenience:
+
+```bash
+alias plannotator='bunx --bun github:dzackgarza/plannotator-dzg-fork'
+```
+
+### Option 2: Install from source
 
 ```bash
 git clone https://github.com/dzackgarza/plannotator-dzg-fork.git
 cd plannotator-dzg-fork
 bun install
-bun run build:review    # build review UI (embedded by hook build)
-bun run build:hook      # build plan/annotate UI
-bun run build:opencode  # build OpenCode plugin
+bun run build
+
+# Compile standalone binary
 bun build apps/hook/server/index.ts --compile --outfile plannotator
 cp plannotator ~/.local/bin/plannotator
 ```
 
 Verify: `plannotator --version`
+
+### Integration setup
 
 **Claude Code hook** — register in `~/.claude/settings.json` (see [Claude Code hook](#claude-code-hook)).
 

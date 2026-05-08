@@ -1,6 +1,13 @@
 # Plannotator
 
-A plan review UI for Claude Code that intercepts `ExitPlanMode` via hooks, letting users approve or request changes with annotated feedback. Also provides code review for git diffs and annotation of arbitrary markdown files.
+Interactive plan and code review UI for AI coding agents.
+
+**Architecture:** The `plannotator` CLI is the primary harness-agnostic interface. All integrations (Claude Code hooks, OpenCode plugins) shell out to the same binary. A persistent daemon manages state and serves the browser UI; the CLI blocks until the user acts.
+
+**Workflows:**
+- Plan review: Agent submits plan → CLI blocks → User annotates in browser → Approve/deny returned to agent
+- Code review: Agent triggers review → Diff opens in browser → User provides feedback asynchronously
+- Document annotation: Agent submits markdown → User annotates → Feedback returned to agent
 
 ## Project Structure
 
