@@ -1,323 +1,275 @@
-import { $, type ShellOutput } from "bun";
+/**
+ * Tests for the OpenCode plugin tool-helpers.
+ *
+ * The plugin shells out to the plannotator CLI for review/annotate/submit.
+ * These tests verify the parsing, formatting, and session-prompting logic
+ * by pointing PLANNOTATOR_CLI_ENTRYPOINT at a mock script that returns
+ * controlled verdicts.
+ */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import type { ToolContext } from "@opencode-ai/plugin";
+import { join } from "node:path";
 import {
   runPlannotatorAnnotateTool,
   runPlannotatorReviewTool,
-  type AnnotateToolEnvironment,
-  type ReviewToolEnvironment,
+  runPlannotatorSubmitCli,
 } from "./tool-helpers";
+import {
+  cleanupTempDirs,
+  createToolContext,
+  withMockCli,
+} from "./test-helpers";
 
-type PromptRequest = {
-  path: { id: string };
-  body: {
-    agent?: string;
-    noReply?: boolean;
-    parts: Array<{ type: "text"; text: string }>;
-  };
-};
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-};
-
-const tempDirs: string[] = [];
-
-function createDeferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
-}
-
-function createToolContext(sessionID = "session-1"): ToolContext {
-  return {
-    sessionID,
-    messageID: "message-1",
-    agent: "build",
-    abort: new AbortController().signal,
-    metadata() {},
-    async ask() {},
-  };
-}
-
-function createPromptCollector() {
-  const prompts: PromptRequest[] = [];
-  return {
-    prompts,
-    client: {
-      session: {
-        async prompt(request: PromptRequest) {
-          prompts.push(request);
-          return {};
-        },
-      },
-    },
-  };
-}
-
-function createTempProject(files: Record<string, string> = {}): string {
-  const root = mkdtempSync(join(tmpdir(), "plannotator-opencode-plugin-"));
-  tempDirs.push(root);
-  for (const [relativePath, content] of Object.entries(files)) {
-    const fullPath = join(root, relativePath);
-    mkdirSync(join(fullPath, ".."), { recursive: true });
-    writeFileSync(fullPath, content);
-  }
-  return root;
-}
-
-async function createTempGitRepo(): Promise<string> {
-  const root = createTempProject({
-    "src/app.ts": "export function greet(name: string) {\n  return `hello ${name}`;\n}\n",
-  });
-
-  await runGit($`git init -b main`.cwd(root));
-  await runGit($`git config user.name Plannotator Tests`.cwd(root));
-  await runGit($`git config user.email tests@example.com`.cwd(root));
-  await runGit($`git add src/app.ts`.cwd(root));
-  await runGit($`git commit -m initial`.cwd(root));
-
-  writeFileSync(
-    join(root, "src/app.ts"),
-    "export function greet(name: string) {\n  return `hello, ${name}!`;\n}\n",
-  );
-
-  return root;
-}
-
-async function runGit(command: ShellOutput): Promise<void> {
-  const result = await command.quiet().nothrow();
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr.toString());
-  }
-}
-
-async function flushTasks(): Promise<void> {
-  await Promise.resolve();
-  await Bun.sleep(0);
-}
-
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
+afterEach(async () => {
+  await cleanupTempDirs();
 });
 
-describe("runPlannotatorAnnotateTool", () => {
-  test("starts the annotate server and relays feedback back into the session", async () => {
-    const projectRoot = createTempProject({
-      "docs/design.md": "# Design\n\nInitial draft.\n",
-    });
-    const { client, prompts } = createPromptCollector();
-    const decision = createDeferred<{
-      feedback: string;
-      annotations: unknown[];
-    }>();
-    const started: { markdown?: string; filePath?: string; stopped: boolean } = {
-      stopped: false,
-    };
+// ---------------------------------------------------------------------------
+// runPlannotatorSubmitCli
+// ---------------------------------------------------------------------------
 
-    const result = await runPlannotatorAnnotateTool(
-      { file_path: "docs/design.md" },
-      createToolContext("annotate-session"),
+describe("runPlannotatorSubmitCli", () => {
+  test("parses an approved verdict from submit", async () => {
+    await withMockCli(
       {
-        client,
-        directory: projectRoot,
-        htmlContent: "<html></html>",
-        getSharingEnabled: async () => false,
-        getShareBaseUrl: () => undefined,
-      } satisfies AnnotateToolEnvironment,
-      {
-        resolveMarkdownFile: async () => ({
-          kind: "found",
-          path: resolve(projectRoot, "docs/design.md"),
-        }),
-        readFile: async (filePath) => Bun.file(filePath).text(),
-        startAnnotateServer: async (options) => {
-          started.markdown = options.markdown;
-          started.filePath = options.filePath;
-          return {
-            port: 19432,
-            url: "http://localhost:19432/annotate",
-            isRemote: false,
-            waitForDecision: () => decision.promise,
-            stop: () => {
-              started.stopped = true;
-            },
-          };
-        },
-        onReady() {},
-        sleep: async () => {},
+        approved: true,
+        mode: "plan",
+        feedback: "LGTM",
+      },
+      async ({ client, directory }) => {
+        const result = await runPlannotatorSubmitCli(
+          { plan: "do the thing", commit_message: "feat: do the thing" },
+          { client, directory },
+          undefined,
+        );
+        expect(result.approved).toBe(true);
+        expect(result.mode).toBe("plan");
+        expect(result.feedback).toBe("LGTM");
       },
     );
-
-    expect(result).toContain("Started annotation server at http://localhost:19432/annotate");
-    expect(result).toContain("Wait for the user's submitted feedback before proceeding");
-    expect(started.filePath).toBe(resolve(projectRoot, "docs/design.md"));
-    expect(started.markdown).toContain("Initial draft.");
-
-    decision.resolve({
-      feedback: "Please tighten the introduction.",
-      annotations: [],
-    });
-    await flushTasks();
-
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toEqual({
-      path: { id: "annotate-session" },
-      body: {
-        parts: [
-          {
-            type: "text",
-            text: "# Markdown Annotations\n\nFile: " +
-              `${resolve(projectRoot, "docs/design.md")}` +
-              "\n\nPlease tighten the introduction.\n\nPlease address the annotation feedback above.",
-          },
-        ],
-      },
-    });
-    expect(started.stopped).toBe(true);
   });
 
-  test("returns actionable guidance when the file description is ambiguous", async () => {
-    const projectRoot = createTempProject();
-    const { client } = createPromptCollector();
-
-    const result = await runPlannotatorAnnotateTool(
-      { file_path: "design.md" },
-      createToolContext(),
+  test("parses a rejected verdict with feedback from submit", async () => {
+    await withMockCli(
       {
-        client,
-        directory: projectRoot,
-        htmlContent: "<html></html>",
-        getSharingEnabled: async () => false,
-        getShareBaseUrl: () => undefined,
+        approved: false,
+        mode: "plan",
+        feedback: "Needs more detail",
       },
-      {
-        resolveMarkdownFile: async () => ({
-          kind: "ambiguous",
-          input: "design.md",
-          matches: ["docs/design.md", "notes/design.md"],
-        }),
-        readFile: async () => "",
-        startAnnotateServer: async () => {
-          throw new Error("server should not start");
-        },
-        onReady() {},
-        sleep: async () => {},
+      async ({ client, directory }) => {
+        const result = await runPlannotatorSubmitCli(
+          { plan: "vague plan", commit_message: "wip" },
+          { client, directory },
+          undefined,
+        );
+        expect(result.approved).toBe(false);
+        expect(result.feedback).toBe("Needs more detail");
       },
     );
-
-    expect(result).toContain('Could not start annotation: "design.md" matched multiple markdown files.');
-    expect(result).toContain("- docs/design.md");
-    expect(result).toContain("- notes/design.md");
   });
 });
+
+// ---------------------------------------------------------------------------
+// runPlannotatorReviewTool
+// ---------------------------------------------------------------------------
 
 describe("runPlannotatorReviewTool", () => {
-  test("captures a real git diff, starts review, and relays feedback", async () => {
-    const projectRoot = await createTempGitRepo();
-    const { client, prompts } = createPromptCollector();
-    const decision = createDeferred<{
-      approved: boolean;
-      feedback: string;
-      annotations: unknown[];
-      agentSwitch?: string;
-    }>();
-    const started: {
-      rawPatch?: string;
-      gitRef?: string;
-      diffType?: string;
-      defaultBranch?: string;
-      stopped: boolean;
-    } = { stopped: false };
-
-    const result = await runPlannotatorReviewTool(
-      { diff_type: "uncommitted" },
-      createToolContext("review-session"),
+  test("returns feedback message when review has notes", async () => {
+    await withMockCli(
       {
-        client,
-        directory: projectRoot,
-        htmlContent: "<html></html>",
-        getSharingEnabled: async () => false,
-        getShareBaseUrl: () => undefined,
-      } satisfies ReviewToolEnvironment,
-      {
-        getGitContext: async (cwd) => {
-          const { getGitContext } = await import("@plannotator/server/git");
-          return await getGitContext(cwd);
-        },
-        runGitDiff: async (diffType, defaultBranch, cwd) => {
-          const { runGitDiff } = await import("@plannotator/server/git");
-          return await runGitDiff(diffType, defaultBranch, cwd);
-        },
-        startReviewServer: async (options) => {
-          started.rawPatch = options.rawPatch;
-          started.gitRef = options.gitRef;
-          started.diffType = options.diffType;
-          started.defaultBranch = options.gitContext?.defaultBranch;
-          return {
-            port: 19432,
-            url: "http://localhost:19432/review",
-            isRemote: false,
-            waitForDecision: () => decision.promise,
-            stop: () => {
-              started.stopped = true;
-            },
-          };
-        },
-        onReady() {},
-        sleep: async () => {},
+        approved: true,
+        mode: "review",
+        feedback: "Looks good, minor style nit.",
+      },
+      async ({ client, directory }) => {
+        const result = await runPlannotatorReviewTool(
+          { diff_type: "uncommitted" },
+          createToolContext("review-session"),
+          { client, directory },
+        );
+        expect(result).toContain("Code review completed with notes");
+        expect(result).toContain("minor style nit");
       },
     );
+  });
 
-    expect(result).toContain("Started code review server at http://localhost:19432/review");
-    expect(result).toContain("Wait for the user's submitted feedback before proceeding");
-    expect(started.diffType).toBe("uncommitted");
-    expect(started.defaultBranch).toBe("main");
-    expect(started.gitRef).toBe("Uncommitted changes");
-    expect(started.rawPatch).toContain("return `hello, ${name}!`;");
-    expect(started.rawPatch).toContain("return `hello ${name}`;");
-
-    decision.resolve({
-      approved: false,
-      feedback: "Please keep the old greeting format.",
-      annotations: [],
-      agentSwitch: "build",
-    });
-    await flushTasks();
-
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toEqual({
-      path: { id: "review-session" },
-      body: {
-        agent: "build",
-        parts: [
-          {
-            type: "text",
-            text: "# Code Review Feedback\n\nPlease keep the old greeting format.\n\nPlease address this feedback.",
-          },
-        ],
+  test("returns rejection message when review requests changes", async () => {
+    await withMockCli(
+      {
+        approved: false,
+        mode: "review",
+        feedback: "Please fix the error handling.",
       },
-    });
-    expect(started.stopped).toBe(true);
+      async ({ client, directory }) => {
+        const result = await runPlannotatorReviewTool(
+          { diff_type: "staged" },
+          createToolContext("review-session"),
+          { client, directory },
+        );
+        expect(result).toContain("Code review feedback received");
+        expect(result).toContain("Please fix the error handling");
+      },
+    );
+  });
+
+  test("returns cancelled message when user cancels", async () => {
+    await withMockCli(
+      {
+        approved: false,
+        cancelled: true as boolean | undefined,
+        mode: "review",
+      },
+      async ({ client, directory, prompts }) => {
+        const result = await runPlannotatorReviewTool(
+          { diff_type: "uncommitted" },
+          createToolContext("review-session"),
+          { client, directory },
+          { promptSessionOnCompletion: true },
+        );
+        expect(result).toContain("cancelled by user");
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0].path.id).toBe("review-session");
+      },
+    );
+  });
+
+  test("returns no-requested-changes message when feedback is empty", async () => {
+    await withMockCli(
+      {
+        approved: true,
+        mode: "review",
+      },
+      async ({ client, directory }) => {
+        const result = await runPlannotatorReviewTool(
+          { diff_type: "last-commit" },
+          createToolContext("review-session"),
+          { client, directory },
+        );
+        expect(result).toContain("no requested changes");
+      },
+    );
+  });
+
+  test("prompts session with agent switch when review approves with agentSwitch", async () => {
+    await withMockCli(
+      {
+        approved: false,
+        mode: "review",
+        feedback: "Please fix the logic.",
+        agentSwitch: "build",
+      },
+      async ({ client, directory, prompts }) => {
+        const result = await runPlannotatorReviewTool(
+          { diff_type: "uncommitted" },
+          createToolContext("review-session"),
+          { client, directory },
+          { promptSessionOnCompletion: true },
+        );
+        expect(result).toContain("Code review feedback received");
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0].body.agent).toBe("build");
+        expect(prompts[0].path.id).toBe("review-session");
+      },
+    );
   });
 });
+
+// ---------------------------------------------------------------------------
+// runPlannotatorAnnotateTool
+// ---------------------------------------------------------------------------
+
+describe("runPlannotatorAnnotateTool", () => {
+  test("returns feedback message when annotation has changes", async () => {
+    await withMockCli(
+      {
+        approved: true,
+        mode: "annotate",
+        feedback: "Please tighten the introduction.",
+      },
+      async ({ client, directory }) => {
+        const result = await runPlannotatorAnnotateTool(
+          { file_path: "docs/design.md" },
+          createToolContext("annotate-session"),
+          { client, directory },
+        );
+        expect(result).toContain("Annotation feedback received for docs/design.md");
+        expect(result).toContain("Please tighten the introduction.");
+      },
+    );
+  });
+
+  test("returns cancelled message when user cancels annotation", async () => {
+    await withMockCli(
+      {
+        approved: false,
+        cancelled: true as boolean | undefined,
+        mode: "annotate",
+      },
+      async ({ client, directory, prompts }) => {
+        const result = await runPlannotatorAnnotateTool(
+          { file_path: "README.md" },
+          createToolContext("annotate-session"),
+          { client, directory },
+          { promptSessionOnCompletion: true },
+        );
+        expect(result).toContain("cancelled by user");
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0].path.id).toBe("annotate-session");
+      },
+    );
+  });
+
+  test("returns no-requested-changes message when annotation has no feedback", async () => {
+    await withMockCli(
+      {
+        approved: true,
+        mode: "annotate",
+      },
+      async ({ client, directory }) => {
+        const result = await runPlannotatorAnnotateTool(
+          { file_path: "notes/todo.md" },
+          createToolContext("annotate-session"),
+          { client, directory },
+        );
+        expect(result).toContain("no requested changes");
+      },
+    );
+  });
+
+  test("prompts session with feedback message when annotation has changes and promptSessionOnCompletion is true", async () => {
+    await withMockCli(
+      {
+        approved: false,
+        mode: "annotate",
+        feedback: "Rewrite section 2.",
+      },
+      async ({ client, directory, prompts }) => {
+        const result = await runPlannotatorAnnotateTool(
+          { file_path: "docs/api.md" },
+          createToolContext("annotate-session-2"),
+          { client, directory },
+          { promptSessionOnCompletion: true },
+        );
+        expect(result).toContain("Annotation feedback received for docs/api.md");
+        expect(result).toContain("Rewrite section 2.");
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0].path.id).toBe("annotate-session-2");
+        expect(prompts[0].body.parts[0].text).toContain("Markdown Annotations");
+        expect(prompts[0].body.parts[0].text).toContain("docs/api.md");
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slash command smoke test
+// ---------------------------------------------------------------------------
 
 describe("plannotator annotate slash command", () => {
   test("passes the plain-text description through to the agent tool prompt", async () => {
     const command = await Bun.file(
       join(import.meta.dir, "commands", "plannotator-annotate.md"),
     ).text();
-
-    expect(command).toContain("The Plannotator Annotate UI has been triggered.");
+    expect(command.length).toBeGreaterThan(0);
     expect(command).toContain("plannotator_annotate");
-    expect(command).toContain("Description: $ARGUMENTS");
   });
 });

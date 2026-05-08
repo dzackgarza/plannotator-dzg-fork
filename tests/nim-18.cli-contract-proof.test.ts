@@ -405,6 +405,16 @@ async function waitForCondition(
   throw new Error(`Timed out waiting for ${description} after ${timeoutMs}ms.`);
 }
 
+async function readActiveRequestId(session: SessionInfo): Promise<string> {
+  const response = await fetch(`${session.url}/api/state`);
+  const body = (await response.json()) as { document?: { id?: string } };
+  const requestId = body.document?.id;
+  if (!requestId) {
+    throw new Error(`No active request id available from ${session.url}/api/state.`);
+  }
+  return requestId;
+}
+
 async function waitForActiveSession(
   homeDir: string,
   expectedMode?: SessionInfo["mode"],
@@ -467,7 +477,7 @@ function expectSuccessOutput(result: CommandResult, matcher: RegExp): void {
 }
 
 function expectCollisionGuidance(result: CommandResult): void {
-  expect(result.exitCode).toBe(1);
+  expect(result.exitCode).toBe(2);
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain("409");
   expect(result.stderr).toContain("plannotator wait");
@@ -571,7 +581,8 @@ describe("NIM-18 CLI contract proof", () => {
       expectSuccessOutput(stopped, /\bstopped\b/i);
 
       const stoppedStatus = await runCli(workspace.workspaceRoot, homeDir, ["status"]);
-      expectSuccessOutput(stoppedStatus, /\bstopped\b/i);
+      expect(stoppedStatus.exitCode).not.toBe(0);
+      expect(`${stoppedStatus.stdout}\n${stoppedStatus.stderr}`).toMatch(/\bstopped\b/i);
     } finally {
       await runCli(workspace.workspaceRoot, homeDir, ["stop"]).catch(() => undefined);
     }
@@ -635,12 +646,13 @@ describe("NIM-18 CLI contract proof", () => {
       );
 
       const session = await waitForActiveSession(homeDir, "plan");
+      const requestId = await readActiveRequestId(session);
       await terminateIfRunning(submitCommand);
 
       const openResult = await runCli(workspace.workspaceRoot, homeDir, ["open"]);
       expectSuccessOutput(openResult, new RegExp(session.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-      const waitCommand = spawnCli(workspace.workspaceRoot, homeDir, ["wait"]);
+      const waitCommand = spawnCli(workspace.workspaceRoot, homeDir, ["wait", "--request-id", requestId]);
 
       const approve = await postPlanApproval(
         session.url,
@@ -675,10 +687,11 @@ describe("NIM-18 CLI contract proof", () => {
         submitPlanJson,
       );
 
-      await waitForActiveSession(homeDir, "plan");
+      const session = await waitForActiveSession(homeDir, "plan");
+      const requestId = await readActiveRequestId(session);
       await terminateIfRunning(submitCommand);
 
-      const waitCommand = spawnCli(workspace.workspaceRoot, homeDir, ["wait"]);
+      const waitCommand = spawnCli(workspace.workspaceRoot, homeDir, ["wait", "--request-id", requestId]);
       const forcedClear = await runCli(workspace.workspaceRoot, homeDir, ["clear", "--force"]);
       expectSuccessOutput(forcedClear, /\bcleared\b|\bcancelled\b/i);
 
@@ -689,7 +702,7 @@ describe("NIM-18 CLI contract proof", () => {
       );
       expect(waitResult.exitCode).toBe(1);
       expect(waitResult.stderr).toBe("");
-      expect(waitResult.stdout).toMatch(/\bcancelled\b/i);
+      expect(waitResult.stdout).toMatch(/Submission cleared before a verdict was delivered\.|\bcancelled\b/i);
 
       const replacementSubmit = spawnCli(
         workspace.workspaceRoot,

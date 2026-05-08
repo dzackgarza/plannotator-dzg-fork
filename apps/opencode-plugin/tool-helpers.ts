@@ -1,6 +1,5 @@
 import type { ToolContext } from "@opencode-ai/plugin";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 export const REVIEW_TOOL_DIFF_TYPES = [
@@ -57,23 +56,20 @@ class CliTimeoutError extends Error {
   }
 }
 
-function resolveRepoLocalCliEntrypoint(directory: string): string {
-  const entrypoint = join(directory, "apps", "hook", "server", "index.ts");
-
-  if (!existsSync(entrypoint)) {
-    throw new Error(
-      `Expected workspace-local plannotator CLI entrypoint at ${entrypoint}, but it does not exist.`,
-    );
+/** Resolves the plannotator CLI command. Supports PLANNOTATOR_CLI_ENTRYPOINT env override for testing. */
+function resolvePlannotatorCommand(directory: string): CliCommand {
+  const envOverride: string | undefined = process.env.PLANNOTATOR_CLI_ENTRYPOINT;
+  if (envOverride !== undefined) {
+    return { argv: [process.execPath, "run", envOverride] };
   }
 
-  return entrypoint;
-}
+  const installedBinary = Bun.which("plannotator");
+  if (installedBinary !== null) {
+    return { argv: [installedBinary] };
+  }
 
-function resolvePlannotatorCommand(directory: string): CliCommand {
-  const entrypoint = resolveRepoLocalCliEntrypoint(directory);
-  return {
-    argv: [process.execPath, "run", entrypoint],
-  };
+  const entrypoint = join(directory, "apps", "hook", "server", "index.ts");
+  return { argv: [process.execPath, "run", entrypoint] };
 }
 
 async function runPlannotatorCli(

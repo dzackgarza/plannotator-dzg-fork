@@ -14,6 +14,9 @@
     "url": "https://github.com/backnotprop/plannotator/issues"
   },
   "workspaces": ["apps/*", "packages/*"],
+  "bin": {
+    "plannotator": "./apps/hook/server/index.ts"
+  },
   "scripts": {
     "dev:hook": "bun run --cwd apps/hook dev",
     "dev:review": "bun run --cwd apps/review dev",

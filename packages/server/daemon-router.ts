@@ -35,8 +35,9 @@ type ResetHookArgs = {
 };
 
 export type DaemonRouterEvent = {
-  type: "resolved";
+  type: "awaiting-revision";
   feedback: FeedbackPayload;
+  document?: DocumentSnapshot;
   state: DaemonState;
 };
 
@@ -222,10 +223,10 @@ function isRecord(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isResolvedState(
+function isAwaitingRevisionState(
   state: DaemonState,
-): state is Extract<DaemonState, { status: "resolved" }> {
-  return state.status === "resolved";
+): state is Extract<DaemonState, { status: "awaiting-revision" }> {
+  return state.status === "awaiting-revision";
 }
 
 function buildCancelledFeedback(message: string): FeedbackPayload {
@@ -279,10 +280,15 @@ async function applyResolution(
       request,
     })) ?? {};
 
+  // Preserve document from currentState for verdict delivery
+  // When approved, nextState is idle with null document/feedback
+  const documentForVerdict = currentState.document;
+
   writeDaemonState(stateAdapter, nextState);
   publishDaemonEvent(eventBus, {
-    type: "resolved",
+    type: "awaiting-revision",
     feedback,
+    document: documentForVerdict,
     state: nextState,
   });
 
@@ -334,25 +340,23 @@ function toSseChunk(event: string, payload: JsonObject): Uint8Array {
 }
 
 function buildVerdictPayload(
-  resolvedState: Extract<DaemonState, { status: "resolved" }>,
+  feedback: FeedbackPayload,
+  document: DocumentSnapshot | null | undefined,
+  state: DaemonState,
 ): JsonObject {
   return {
-    feedback: resolvedState.feedback,
-    document: resolvedState.document,
-    state: resolvedState,
+    feedback,
+    document,
+    state,
   };
 }
 
-function maybeConsumeCancelledVerdict(
+function maybeConsumeDeliveredVerdict(
   stateAdapter: DaemonRouterState,
-  resolvedState: Extract<DaemonState, { status: "resolved" }>,
+  resolvedState: Extract<DaemonState, { status: "awaiting-revision" }>,
 ): void {
-  if (resolvedState.feedback.cancelled !== true) {
-    return;
-  }
-
   const currentState = readDaemonState(stateAdapter);
-  if (!isResolvedState(currentState)) {
+  if (!isAwaitingRevisionState(currentState)) {
     return;
   }
 
@@ -360,16 +364,31 @@ function maybeConsumeCancelledVerdict(
     return;
   }
 
-  if (currentState.feedback.cancelled !== true) {
-    return;
-  }
-
   const nextState = resolveClearTransition(currentState);
   if (nextState instanceof Response) {
-    throw new Error("Cancelled verdict could not be consumed.");
+    throw new Error("Delivered verdict could not be consumed.");
   }
 
   writeDaemonState(stateAdapter, nextState);
+}
+
+function buildCancelFeedback(
+  currentState: DaemonState,
+): FeedbackPayload {
+  const document = currentState.document;
+  const feedback =
+    document?.mode === "annotate" && document.filePath
+      ? `Annotation of ${document.filePath} cancelled by user.`
+      : document?.mode === "review"
+        ? "Code review cancelled by user."
+        : "Plan review cancelled by user.";
+
+  return {
+    approved: false,
+    feedback,
+    annotations: [],
+    cancelled: true,
+  };
 }
 
 function serveActiveBundle(
@@ -415,7 +434,7 @@ export function createDaemonRouter(
       }
 
       if (url.pathname === "/api/submit" && req.method === "POST") {
-        if (currentState.status !== "idle") {
+        if (currentState.status !== "idle" && currentState.status !== "awaiting-revision") {
           return Response.json(
             {
               error: `Daemon cannot accept a new submission while state is ${currentState.status}.`,
@@ -495,9 +514,53 @@ export function createDaemonRouter(
       }
 
       if (url.pathname === "/api/wait" && req.method === "GET") {
+        const requestId = url.searchParams.get("requestId") ?? undefined;
+
         if (currentState.status === "idle") {
           return Response.json(
-            { error: "No active or buffered daemon verdict is available." },
+            { error: "No active or buffered daemon verdict is available.", code: "verdict_consumed_or_unknown" },
+            { status: 409 },
+          );
+        }
+
+        // D2: in resolved (verdict_ready), plain wait without requestId is a stale-verdict
+        // risk — a later unrelated command could inadvertently consume an old verdict.
+        // Only an exact-ID waiter may recover the buffered verdict.
+        if (currentState.status === "awaiting-revision") {
+          if (!requestId) {
+            return Response.json(
+              {
+                error:
+                  "Cannot deliver buffered verdict without a requestId. Use: plannotator wait --request-id " +
+                  currentState.document.id,
+                code: "illegal_state",
+                activeRequestId: currentState.document.id,
+                recovery: "plannotator wait --request-id " + currentState.document.id,
+              },
+              { status: 409 },
+            );
+          }
+          if (requestId !== currentState.document.id) {
+            return Response.json(
+              {
+                error: `requestId mismatch: active request is ${currentState.document.id}.`,
+                code: "request_id_mismatch",
+                activeRequestId: currentState.document.id,
+              },
+              { status: 409 },
+            );
+          }
+          // Correct requestId: fall through to SSE delivery below.
+        }
+
+        // D2: in awaiting-response (in_review), validate requestId if provided.
+        if (currentState.status === "awaiting-response" && requestId && requestId !== currentState.document.id) {
+          return Response.json(
+            {
+              error: `requestId mismatch: active request is ${currentState.document.id}.`,
+              code: "request_id_mismatch",
+              activeRequestId: currentState.document.id,
+            },
             { status: 409 },
           );
         }
@@ -546,39 +609,53 @@ export function createDaemonRouter(
               req.signal.removeEventListener("abort", handleAbort);
             };
 
-            const deliver = (
-              resolvedState: Extract<DaemonState, { status: "resolved" }>,
-            ) => {
+            const deliver = (event: DaemonRouterEvent) => {
               if (closed) {
                 return;
               }
 
               try {
                 controller.enqueue(
-                  toSseChunk("verdict", buildVerdictPayload(resolvedState)),
+                  toSseChunk(
+                    "verdict",
+                    buildVerdictPayload(
+                      event.feedback,
+                      event.document ?? event.state.document,
+                      event.state,
+                    ),
+                  ),
                 );
               } catch {
                 cleanup();
                 return;
               }
 
-              maybeConsumeCancelledVerdict(stateAdapter, resolvedState);
+              // Don't auto-clear after delivering verdict - state should stay resolved
+              // until user submits revision or explicitly clears
+              if (isAwaitingRevisionState(event.state)) {
+                // maybeConsumeDeliveredVerdict(stateAdapter, event.state);
+              }
               finish();
             };
 
-            if (isResolvedState(currentState)) {
-              deliver(currentState);
+            if (isAwaitingRevisionState(currentState)) {
+              deliver({
+                type: "awaiting-revision",
+                feedback: currentState.feedback,
+                document: currentState.document,
+                state: currentState,
+              });
               return;
             }
 
             controller.enqueue(new TextEncoder().encode(": connected\n\n"));
 
             unsubscribe = subscribe((event) => {
-              if (event.type !== "resolved") {
+              if (event.type !== "awaiting-revision") {
                 return;
               }
 
-              deliver(event.state);
+              deliver(event);
             });
           },
           cancel() {
@@ -688,12 +765,7 @@ export function createDaemonRouter(
           return modeMismatch;
         }
 
-        const feedback: FeedbackPayload = {
-          approved: false,
-          feedback: "Review cancelled by user.",
-          annotations: [],
-          cancelled: true,
-        };
+        const feedback = buildCancelFeedback(currentState);
 
         return applyResolution(
           stateAdapter,
@@ -734,7 +806,7 @@ export function createDaemonRouter(
 
           writeDaemonState(stateAdapter, nextState);
           publishDaemonEvent(eventBus, {
-            type: "resolved",
+            type: "awaiting-revision",
             feedback: nextState.feedback,
             state: nextState,
           });

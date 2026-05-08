@@ -1,0 +1,37 @@
+filters:
+  and:
+    - file.inFolder("plans")
+    - '!file.name.startsWith("management-view")'
+    - '!file.name.startsWith("plan-dag")'
+views:
+  - type: branches-tree
+    name: Planning Tree
+    groupBy:
+      property: file.folder
+      direction: ASC
+    order:
+      - file.name
+    sort:
+      - property: file.name
+        direction: ASC
+    markers: bullet
+    indentProperties: false
+    parentProp: note.parents
+    viewMode: indented
+    layoutDirection: TB
+    avatarShape: circle
+    showChildCount: true
+    showDotGrid: true
+    colorProp: note.status
+    labelProp: note.status
+    childOrderProp: note.id
+  - type: kanban
+    name: Kanban
+    groupBy:
+      property: status
+      direction: ASC
+    boardColumns:
+      - unstarted
+      - in-progress
+      - needs-review
+      - (No value)

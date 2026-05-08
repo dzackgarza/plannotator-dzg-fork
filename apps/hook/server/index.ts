@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * Plannotator CLI for Claude Code
  *
@@ -15,7 +16,7 @@
  * but it now routes through the daemon-backed submit/wait flow.
  */
 
-import { daemonStatus, openBrowser, startDaemonDetached, stopDaemon } from "@plannotator/server";
+import { daemonStatus, getServerPort, openBrowser, startDaemonDetached, stopDaemon } from "@plannotator/server";
 import { notifyDocumentEnteredReview } from "@plannotator/server/notify";
 import { resolveMarkdownFile } from "@plannotator/server/resolve-file";
 import { listSessions, registerSession, unregisterSession } from "@plannotator/server/sessions";
@@ -38,7 +39,7 @@ import { handleDraftDelete, handleDraftLoad, handleDraftSave, handleImage, handl
 import { handleDoc } from "../../../packages/server/reference-handlers";
 import { contentHash } from "../../../packages/server/draft";
 import { getRepoInfo } from "../../../packages/server/repo";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,6 +90,7 @@ type ActivePlanContext = {
 
 type ActiveReviewContext = {
   diffType: DiffType;
+  cwd?: string;
   gitContext: Awaited<ReturnType<typeof getGitContext>>;
   repoInfo: Awaited<ReturnType<typeof getRepoInfo>>;
   error?: string;
@@ -110,26 +112,163 @@ process.on("exit", () => unregisterSession());
 
 function usageText(): string {
   return [
+    "plannotator — daemon-backed plan & code review CLI",
+    "",
     "Usage:",
-    "  plannotator daemon start [--foreground]",
-    "  plannotator daemon stop",
-    "  plannotator daemon status",
-    "  plannotator start",
-    "  plannotator stop",
-    "  plannotator status",
-    "  plannotator submit [file] [--mode plan|annotate] [--no-browser] [--commit-message <msg>] [--json]",
-    "  plannotator review [--diff-type <uncommitted|staged|unstaged|last-commit|branch|worktree:...>] [--json]",
+    "  plannotator submit <file> [--commit-message <msg>] [--json]",
+    "  plannotator review [--diff-type <type>] [--json]",
     "  plannotator annotate <file> [--json]",
-    "  plannotator wait [--json]",
+    "  plannotator wait [--request-id <id>] [--json]",
+    "  plannotator status",
     "  plannotator clear [--force]",
     "  plannotator open",
+    "  plannotator install-skill --local | --global",
+    "  plannotator daemon start|stop|status",
     "",
-    "Exit codes:",
-    "  0   approved or command completed successfully",
-    "  1   denied, collision, not running (daemon status), or daemon-delivered cancellation",
-    "  2   illegal-state rejection",
-    "  3   daemon failure or lost daemon connection after retry",
-    "  130 local CLI cancellation via signal",
+    "Common commands:",
+    "  submit <file>     Submit plan for review (daemon auto-starts)",
+    "  status            Check daemon and workflow state",
+    "  wait              Block until user makes decision",
+    "  install-skill     Install workflow skill for agents",
+    "",
+    "Run 'plannotator --help' for detailed workflow guide.",
+    "Run 'plannotator <command> --help' for command-specific help.",
+  ].join("\n");
+}
+
+function helpText(): string {
+  return [
+    "plannotator — CLI-first iterative planning workflow",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                        GOLDEN WORKFLOW",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "1. Create durable plan file:",
+    "   mkdir -p .agents/plans",
+    "   echo '# Feature Plan...' > .agents/plans/feature.md",
+    "",
+    "2. Submit plan (daemon auto-starts, opens browser):",
+    "   plannotator submit .agents/plans/feature.md",
+    "",
+    "3. User reviews in browser → approve/deny/cancel",
+    "",
+    "4. If denied (exit 1), EDIT plan file (don't rewrite!):",
+    "   - Read feedback from output",
+    "   - Make targeted edits to address feedback",
+    "   - Resubmit: plannotator submit .agents/plans/feature.md",
+    "   - Tool shows diff view (+/-/~ changes) to user",
+    "",
+    "5. Repeat until approved (exit 0)",
+    "",
+    "6. Proceed with implementation",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                         EXIT CODES",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "  0    Approved / Success",
+    "       → Plan accepted, proceed with implementation",
+    "       → Command completed successfully",
+    "",
+    "  1    Denied / Needs Revision",
+    "       → User provided feedback, revise and resubmit",
+    "       → Don't rewrite - EDIT specific sections",
+    "       → Tool tracks versions and shows diffs automatically",
+    "",
+    "  2    Collision / Illegal State",
+    "       → Another plan is active (check: plannotator status)",
+    "       → Clear if needed: plannotator clear --force",
+    "",
+    "  3    Daemon Failure",
+    "       → Daemon crashed or connection lost",
+    "       → Restart: plannotator daemon stop && plannotator submit ...",
+    "",
+    "  130  Cancelled (Ctrl+C)",
+    "       → User interrupted CLI, workflow still active",
+    "       → Reconnect: plannotator wait",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                      CHECKING STATE",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "Check what's happening:",
+    "  plannotator status",
+    "",
+    "Output shows:",
+    "  - Daemon status (running/stopped)",
+    "  - Workflow state (idle/awaiting-response/awaiting-revision)",
+    "  - Active document (if any)",
+    "  - Browser URL to resume review",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                    KEY PRINCIPLES",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "✓ EDIT, don't rewrite plans",
+    "  - User sees diff view in browser",
+    "  - Incremental changes are easier to understand",
+    "  - Tool tracks versions automatically",
+    "",
+    "✓ No timeouts on waits",
+    "  - User can take hours drafting feedback",
+    "  - 'plannotator wait' blocks until decision",
+    "",
+    "✓ Submit auto-starts daemon",
+    "  - Don't manually start: plannotator daemon start",
+    "  - Just submit, daemon starts if needed",
+    "",
+    "✓ Background terminal recommended",
+    "  - Run submit in PTY/background terminal",
+    "  - Continue other work while waiting",
+    "  - Poll status or wait for callback",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                   INSTALL WORKFLOW SKILL",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "For AI agents using this tool, install the workflow skill:",
+    "",
+    "  Local (repo-specific):",
+    "    plannotator install-skill --local",
+    "    → Installs to ./.agents/skills/plannotator-workflow.md",
+    "",
+    "  Global (all projects):",
+    "    plannotator install-skill --global",
+    "    → Installs to ~/.agents/skills/plannotator-workflow.md",
+    "",
+    "The skill explains:",
+    "  - CLI-first workflow via bunx (zero install)",
+    "  - Durable plan file strategy",
+    "  - Edit vs rewrite patterns",
+    "  - Revision cycle best practices",
+    "  - Post-approval workflow",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "                      QUICK EXAMPLES",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "Submit plan:",
+    "  plannotator submit plan.md",
+    "",
+    "Via bunx (no install):",
+    "  bunx github:dzackgarza/plannotator-dzg-fork submit plan.md",
+    "",
+    "Check status:",
+    "  plannotator status",
+    "",
+    "Wait for decision:",
+    "  plannotator wait",
+    "",
+    "Code review:",
+    "  plannotator review",
+    "",
+    "Clear stuck workflow:",
+    "  plannotator clear --force",
+    "",
+    "═══════════════════════════════════════════════════════════════",
+    "",
+    "Full documentation: https://github.com/dzackgarza/plannotator-dzg-fork",
   ].join("\n");
 }
 
@@ -192,11 +331,13 @@ function writeDaemonMetadata(port: number): void {
 }
 
 async function allocateDaemonPort(): Promise<number> {
+  const desiredPort = getServerPort();
+
   return await new Promise<number>((resolve, reject) => {
     const server = createServer();
     server.unref();
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(desiredPort, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") {
         server.close();
@@ -306,7 +447,7 @@ function parseCommand(argv: string[]): string[] {
   }
 
   if (takeFlag(args, "--help") || takeFlag(args, "-h")) {
-    console.log(usageText());
+    console.log(helpText());
     process.exit(EXIT_OK);
   }
 
@@ -441,8 +582,38 @@ async function printCollision(commandLabel: string): Promise<never> {
       "Reopen with: plannotator open",
       "To discard it: plannotator clear --force",
     ].join("\n"),
-    EXIT_DENIED,
+    EXIT_ILLEGAL_STATE,
   );
+}
+
+function renderHookDeny(message: string): never {
+  console.log(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "deny",
+          message,
+        },
+      },
+    }),
+  );
+  process.exit(EXIT_OK);
+}
+
+async function printHookCollision(commandLabel: string): Promise<never> {
+  const state = await readDaemonStateFromHttp().catch(() => null);
+  const label = commandLabel === "submit" ? "plan submission" : commandLabel;
+  const requestId = state?.document?.id;
+  const details = [
+    `Plannotator could not accept this ${label} because another review is already active.`,
+    requestId ? `Active request ID: ${requestId}` : null,
+    "Reopen with: plannotator open",
+    "To fetch the active verdict: plannotator wait",
+    "To discard it: plannotator clear --force",
+  ].filter((line): line is string => Boolean(line));
+
+  renderHookDeny(details.join("\n"));
 }
 
 async function openSessionUrl(url: string): Promise<void> {
@@ -514,12 +685,54 @@ function extractVerdictEvents(buffer: string): { events: VerdictPayload[]; rest:
   return { events, rest: remaining };
 }
 
-async function waitForVerdict(): Promise<VerdictPayload> {
+async function collectEventStreamEvents(
+  stream: ReadableStream<Uint8Array>,
+): Promise<VerdictPayload[]> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  buffer += decoder.decode();
+  return extractVerdictEvents(buffer).events;
+}
+
+function validateStreamEvents(events: VerdictPayload[]): void {
+  if (events.length === 0) {
+    throw new Error("Daemon /api/wait closed without emitting a verdict event.");
+  }
+}
+
+function parseStreamEvents(events: VerdictPayload[]): VerdictPayload {
+  const verdict = events.at(-1);
+  if (!verdict) {
+    throw new Error("No verdict event was available to parse.");
+  }
+
+  return verdict;
+}
+
+async function waitForVerdict(requestId?: string): Promise<VerdictPayload> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= WAIT_STREAM_RETRIES; attempt++) {
     try {
-      const response = await fetch(`${getDaemonUrl()}/api/wait`);
+      const waitUrl = requestId
+        ? `${getDaemonUrl()}/api/wait?requestId=${encodeURIComponent(requestId)}`
+        : `${getDaemonUrl()}/api/wait`;
+      const response = await fetch(waitUrl);
       if (response.status === 409) {
         const body = await response.text();
         fail(body || "No active or buffered daemon verdict is available.", EXIT_ILLEGAL_STATE);
@@ -536,36 +749,22 @@ async function waitForVerdict(): Promise<VerdictPayload> {
         throw new Error("Daemon /api/wait returned no readable response body.");
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const events = await collectEventStreamEvents(response.body);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
+      validateStreamEvents(events);
 
-        buffer += decoder.decode(value, { stream: true });
-        const parsed = extractVerdictEvents(buffer);
-        buffer = parsed.rest;
-        if (parsed.events.length > 0) {
-          return parsed.events[parsed.events.length - 1];
-        }
-      }
-
-      throw new Error("Daemon verdict stream closed before a verdict arrived.");
+      return parseStreamEvents(events);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+
       if (attempt < WAIT_STREAM_RETRIES) {
-        continue;
+        await Bun.sleep(LIVENESS_POLL_MS);
       }
     }
   }
 
-  throw new Error(
-    `Lost connection to the daemon verdict stream after retry: ${lastError?.message ?? "unknown error"}`,
-  );
+  const message = lastError ? `${lastError.message} (after ${WAIT_STREAM_RETRIES} retries)` : "Failed to wait for verdict.";
+  fail(message, EXIT_DAEMON_FAILURE);
 }
 
 function renderPlainVerdict(payload: VerdictPayload): never {
@@ -577,11 +776,7 @@ function renderPlainVerdict(payload: VerdictPayload): never {
   }
 
   if (feedback.cancelled) {
-    if (feedback.feedback) {
-      console.log(`Cancelled: ${feedback.feedback}`);
-    } else {
-      console.log("Cancelled.");
-    }
+    console.log(feedback.feedback || "Cancelled.");
   } else if (feedback.feedback) {
     console.log(feedback.feedback);
   }
@@ -592,6 +787,15 @@ function renderPlainVerdict(payload: VerdictPayload): never {
 
   if (document.mode === "review" || document.mode === "annotate") {
     process.exit(EXIT_OK);
+  }
+
+  // For plans, instruct the agent on next steps
+  if (document.mode === "plan") {
+    if (feedback.approved) {
+      console.log("\nPlan approved. Proceed with implementation.");
+    } else {
+      console.log("\nPlease revise the plan to address this feedback and resubmit.");
+    }
   }
 
   process.exit(feedback.approved ? EXIT_OK : EXIT_DENIED);
@@ -681,6 +885,7 @@ async function submitDocument(
     noBrowser?: boolean;
     permissionMode?: string;
     commitMessage?: string;
+    submitPayload?: Record<string, unknown>;
     verdictFormat?: "plain" | "json";
   } = {},
 ): Promise<never> {
@@ -690,9 +895,10 @@ async function submitDocument(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         document,
-        noBrowser: options.noBrowser === true,
+        noBrowser: true, // CLI handles browser opening, not daemon
         permissionMode: options.permissionMode,
         commitMessage: options.commitMessage,
+        ...options.submitPayload,
       }),
     });
 
@@ -708,7 +914,7 @@ async function submitDocument(
       await openSessionUrl(url);
     }
 
-    const verdict = await waitForVerdict().catch((error) => {
+    const verdict = await waitForVerdict(document.id).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       fail(`${message}\nUse plannotator wait to reconnect or plannotator open to reopen the session.`, EXIT_DAEMON_FAILURE);
     });
@@ -764,14 +970,14 @@ async function submitPlanFromHook(): Promise<never> {
     });
 
     if (response.status === 409) {
-      await printCollision("submit");
+      await printHookCollision("submit");
     }
     if (!response.ok) {
       fail(text || `Daemon submit failed with ${response.status}.`, EXIT_DAEMON_FAILURE);
     }
 
     await openSessionUrl(getDaemonUrl());
-    const verdict = await waitForVerdict().catch((error) => {
+    const verdict = await waitForVerdict(source.document.id).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       fail(`${message}\nUse plannotator wait to reconnect or plannotator open to reopen the session.`, EXIT_DAEMON_FAILURE);
     });
@@ -843,10 +1049,33 @@ async function runStatus(strictDaemonStatus: boolean): Promise<never> {
   process.exit(EXIT_OK);
 }
 
+async function verifyDaemonStarted(port: number, timeoutMs: number): Promise<boolean> {
+  const lockfilePath = getDaemonLockfilePath();
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!existsSync(lockfilePath)) {
+      return false;
+    }
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/api/state`, {
+        signal: AbortSignal.timeout(500),
+      });
+      if (resp.ok) return true;
+    } catch {}
+    await new Promise<void>((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
 async function runStart(): Promise<never> {
   const port = await ensureDaemonPort();
   const result = await startDaemonDetached(daemonLaunchOptions(port));
-  await waitForDaemonLiveness();
+  if (result.verdict === "started") {
+    const alive = await verifyDaemonStarted(port, 10_000);
+    if (!alive) {
+      fail("Daemon failed to start (port may be in use).", EXIT_DAEMON_FAILURE);
+    }
+  }
   const statusWord = result.verdict === "running" ? "running" : "started";
   console.log(`${statusWord} ${getDaemonUrl(port)} port=${port}`);
   process.exit(EXIT_OK);
@@ -872,11 +1101,90 @@ async function runOpen(): Promise<never> {
   fail("runOpen returned unexpectedly.", EXIT_DAEMON_FAILURE);
 }
 
+async function runInstallSkill(args: string[]): Promise<never> {
+  const hasLocal = args.includes("--local");
+  const hasGlobal = args.includes("--global");
+
+  if (!hasLocal && !hasGlobal) {
+    fail(
+      [
+        "Error: Must specify --local or --global",
+        "",
+        "Usage:",
+        "  plannotator install-skill --local   (installs to ./.agents/skills/)",
+        "  plannotator install-skill --global  (installs to ~/.agents/skills/)",
+      ].join("\n"),
+      EXIT_ILLEGAL_STATE,
+    );
+  }
+
+  if (hasLocal && hasGlobal) {
+    fail("Error: Cannot specify both --local and --global", EXIT_ILLEGAL_STATE);
+  }
+
+  // Determine source and destination paths
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = join(scriptDir, "../../..");
+  const skillSource = join(repoRoot, "SKILL.md");
+
+  if (!existsSync(skillSource)) {
+    fail(`Error: SKILL.md not found at ${skillSource}`, EXIT_DAEMON_FAILURE);
+  }
+
+  const targetDir = hasLocal
+    ? join(process.cwd(), ".agents/skills")
+    : join(homedir(), ".agents/skills");
+  const targetPath = join(targetDir, "plannotator-workflow.md");
+
+  // Create target directory
+  mkdirSync(targetDir, { recursive: true });
+
+  // Copy skill file
+  const skillContent = readFileSync(skillSource, "utf8");
+  writeFileSync(targetPath, skillContent, "utf8");
+
+  const location = hasLocal ? "local (./.agents/skills/)" : "global (~/.agents/skills/)";
+  console.log(`✓ Installed plannotator workflow skill to ${location}`);
+  console.log(`  ${targetPath}`);
+  console.log("");
+  console.log("The skill explains:");
+  console.log("  • CLI-first workflow via bunx (zero install)");
+  console.log("  • Durable plan file strategy");
+  console.log("  • Edit vs rewrite patterns");
+  console.log("  • Revision cycle best practices");
+  console.log("  • Post-approval workflow");
+  console.log("");
+  console.log("Agents should read this skill before using plannotator.");
+
+  process.exit(EXIT_OK);
+}
+
+async function resolveWaitRequestId(requestId?: string): Promise<string | undefined> {
+  if (requestId) {
+    return requestId;
+  }
+
+  const currentState = await readDaemonStateFromHttp().catch(() => null);
+  if (currentState?.document?.id) {
+    // Auto-bind when the daemon has an active or buffered request.
+    // This covers both awaiting-response (in_review) and resolved (verdict_ready)
+    // states, so `plannotator wait` recovers a buffered verdict without
+    // requiring the user to discover and pass --request-id manually.
+    if (currentState.status === "awaiting-response" || currentState.status === "awaiting-revision") {
+      return currentState.document.id;
+    }
+  }
+
+  return undefined;
+}
+
 async function runWait(args: string[]): Promise<never> {
   const json = takeFlag(args, "--json");
+  const requestId = takeOption(args, "--request-id");
 
   await withDaemon(async () => {
-    const verdict = await waitForVerdict().catch((error) => {
+    const boundRequestId = await resolveWaitRequestId(requestId);
+    const verdict = await waitForVerdict(boundRequestId).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       fail(message, EXIT_DAEMON_FAILURE);
     });
@@ -895,22 +1203,15 @@ async function runClear(args: string[]): Promise<never> {
 
   await withDaemon(async () => {
     const currentState = await readDaemonStateFromHttp();
-    if (!force) {
-      if (currentState.status === "idle") {
-        console.log("Nothing to clear.");
-        process.exit(EXIT_OK);
-      }
-
-      console.log(
-        `Would clear ${currentState.status} ${summarizeDocument(currentState.document)} at ${getDaemonUrl()}. Re-run with --force to reset daemon state.`,
-      );
+    if (currentState.status === "idle") {
+      console.log("Nothing to clear.");
       process.exit(EXIT_OK);
     }
 
     const { response, text } = await requestJson("/api/clear", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ force: true }),
+      body: JSON.stringify(force ? { force: true } : {}),
     });
 
     if (response.status === 409) {
@@ -920,7 +1221,7 @@ async function runClear(args: string[]): Promise<never> {
       fail(text || `Daemon clear failed with ${response.status}.`, EXIT_DAEMON_FAILURE);
     }
 
-    console.log(`cleared ${getDaemonUrl()}`);
+    console.log(`${force ? "cleared" : "discarded"} ${getDaemonUrl()}`);
     process.exit(EXIT_OK);
   });
 
@@ -930,9 +1231,10 @@ async function runClear(args: string[]): Promise<never> {
 async function runReview(args: string[]): Promise<never> {
   const json = takeFlag(args, "--json");
   const diffType = (takeOption(args, "--diff-type") as DiffType | undefined) ?? "uncommitted";
-  const gitContext = await getGitContext();
-  const defaultBranch = gitContext.defaultBranch || (await getDefaultBranch());
-  const { patch, label } = await runGitDiff(diffType, defaultBranch);
+  const reviewCwd = process.env.PLANNOTATOR_CWD || process.cwd();
+  const gitContext = await getGitContext(reviewCwd);
+  const defaultBranch = gitContext.defaultBranch || (await getDefaultBranch(reviewCwd));
+  const { patch, label } = await runGitDiff(diffType, defaultBranch, reviewCwd);
   const document: DocumentSnapshot = {
     id: `review-${crypto.randomUUID()}`,
     mode: "review",
@@ -941,7 +1243,13 @@ async function runReview(args: string[]): Promise<never> {
     gitRef: label,
   };
 
-  await submitDocument(document, { verdictFormat: json ? "json" : "plain" });
+  await submitDocument(document, {
+    verdictFormat: json ? "json" : "plain",
+    submitPayload: {
+      diffType,
+      cwd: reviewCwd,
+    },
+  });
   fail("runReview returned unexpectedly.", EXIT_DAEMON_FAILURE);
 }
 
@@ -983,6 +1291,22 @@ async function runAnnotate(args: string[]): Promise<never> {
 }
 
 async function runSubmit(args: string[]): Promise<never> {
+  if (takeFlag(args, "--help") || takeFlag(args, "-h")) {
+    console.log(
+      [
+        "plannotator submit <file> [options]",
+        "",
+        "Options:",
+        "  --mode <plan|annotate>     Submission mode (default: plan)",
+        "  --no-browser               Do not open a browser window",
+        "  --commit-message <msg>     Attach a commit message to the submission",
+        "  --json                     Output verdict as JSON on stdout",
+        "  --request-id <id>          Request ID to associate with this submission",
+        "  --help, -h                 Show this help",
+      ].join("\n"),
+    );
+    process.exit(EXIT_OK);
+  }
   const json = takeFlag(args, "--json");
   const mode = takeOption(args, "--mode") ?? "plan";
   const noBrowser = takeFlag(args, "--no-browser");
@@ -1116,12 +1440,15 @@ async function startForegroundDaemon(): Promise<void> {
             repoInfo,
           };
         } else if (nextState.document.mode === "review") {
+          const reviewCwd =
+            typeof body.cwd === "string" && body.cwd.length > 0 ? body.cwd : undefined;
           const diffType =
             typeof body.diffType === "string" ? (body.diffType as DiffType) : "uncommitted";
           activeReviewContext = {
             diffType,
-            gitContext: await getGitContext(),
-            repoInfo,
+            cwd: reviewCwd,
+            gitContext: await getGitContext(reviewCwd),
+            repoInfo: (await getRepoInfo(reviewCwd)) ?? repoInfo,
           };
         } else {
           activeAnnotateContext = { repoInfo };
@@ -1200,8 +1527,11 @@ async function startForegroundDaemon(): Promise<void> {
               return Response.json({ error: "Missing diffType" }, { status: 400 });
             }
 
-            const defaultBranch = await getDefaultBranch();
-            const result = await runGitDiff(body.diffType, defaultBranch);
+            const reviewCwd = activeReviewContext?.cwd;
+            const defaultBranch =
+              activeReviewContext?.gitContext.defaultBranch ??
+              (await getDefaultBranch(reviewCwd));
+            const result = await runGitDiff(body.diffType, defaultBranch, reviewCwd);
             if (currentState.document?.mode === "review" && currentState.document) {
               currentState = {
                 ...currentState,
@@ -1214,8 +1544,9 @@ async function startForegroundDaemon(): Promise<void> {
               saveState(currentState);
               activeReviewContext = {
                 diffType: body.diffType,
-                gitContext: await getGitContext(),
-                repoInfo,
+                cwd: reviewCwd,
+                gitContext: await getGitContext(reviewCwd),
+                repoInfo: (await getRepoInfo(reviewCwd)) ?? repoInfo,
                 error: result.error,
               };
             }
@@ -1233,7 +1564,7 @@ async function startForegroundDaemon(): Promise<void> {
         }
 
         if (url.pathname === "/api/file-content" && req.method === "GET") {
-          const filePath = url.searchParams.get("path");
+          const filePath = url.searchParams.get("path") ?? url.searchParams.get("file");
           if (!filePath) {
             return Response.json({ error: "Missing path" }, { status: 400 });
           }
@@ -1254,11 +1585,18 @@ async function startForegroundDaemon(): Promise<void> {
           }
 
           try {
+            const reviewCwd = activeReviewContext?.cwd;
+            const diffType = activeReviewContext?.diffType ?? "uncommitted";
+            const defaultBranch =
+              activeReviewContext?.gitContext.defaultBranch ??
+              (await getDefaultBranch(reviewCwd));
             return Response.json(
               await getFileContentsForDiff(
+                diffType,
+                defaultBranch,
                 filePath,
                 oldPath,
-                currentState.document?.gitRef || "HEAD",
+                reviewCwd,
               ),
             );
           } catch (error) {
@@ -1276,10 +1614,11 @@ async function startForegroundDaemon(): Promise<void> {
             }
 
             validateFilePath(body.filePath);
+            const targetCwd = activeReviewContext?.cwd;
             if (body.undo) {
-              await gitResetFile(body.filePath);
+              await gitResetFile(body.filePath, targetCwd);
             } else {
-              await gitAddFile(body.filePath);
+              await gitAddFile(body.filePath, targetCwd);
             }
 
             return Response.json({ ok: true });
@@ -1300,8 +1639,24 @@ async function startForegroundDaemon(): Promise<void> {
     fetch: router.fetch,
   });
 
+  // Write discovery files only after the server has successfully bound its port.
+  writeDaemonMetadata(getDaemonPort());
+  writeFileSync(
+    getDaemonLockfilePath(),
+    JSON.stringify({
+      pid: process.pid,
+      childPid: process.pid,
+      createdAt: new Date().toISOString(),
+      command: process.argv,
+      cwd: process.cwd(),
+    }),
+    "utf8",
+  );
+
   const cleanup = () => {
     unregisterSession(process.pid);
+    try { unlinkSync(getDaemonMetadataPath()); } catch {}
+    try { unlinkSync(getDaemonLockfilePath()); } catch {}
     server.stop();
   };
 
@@ -1317,7 +1672,24 @@ async function startForegroundDaemon(): Promise<void> {
 async function main(): Promise<void> {
   const args = parseCommand(process.argv.slice(2));
 
+  // No arguments: show informative usage
   if (args.length === 0) {
+    console.log(usageText());
+    console.log("");
+    console.log("Run via bunx (no install needed):");
+    console.log("  bunx github:dzackgarza/plannotator-dzg-fork submit plan.md");
+    console.log("");
+    console.log("Getting started:");
+    console.log("  1. Create plan: echo '# Plan...' > plan.md");
+    console.log("  2. Submit: bunx github:dzackgarza/plannotator-dzg-fork submit plan.md");
+    console.log("  3. Review in browser, approve/deny");
+    console.log("");
+    console.log("Run 'plannotator --help' for detailed workflow guide.");
+    process.exit(0);
+  }
+
+  // Hook mode: when stdin is a plan from Claude Code
+  if (args.length === 0 && !process.stdin.isTTY) {
     await submitPlanFromHook();
     return;
   }
@@ -1352,7 +1724,7 @@ async function main(): Promise<void> {
       await runStop();
       return;
     case "status":
-      await runStatus(false);
+      await runStatus(true);
       return;
     case "submit":
       await runSubmit(args.slice(1));
@@ -1371,6 +1743,9 @@ async function main(): Promise<void> {
       return;
     case "open":
       await runOpen();
+      return;
+    case "install-skill":
+      await runInstallSkill(args.slice(1));
       return;
     default:
       fail(usageText(), EXIT_ILLEGAL_STATE);
