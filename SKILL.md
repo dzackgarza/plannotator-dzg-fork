@@ -13,13 +13,13 @@ All operations use the `plannotator` CLI via bunx. No installation required.
 
 ```bash
 # Submit plan for review
-bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
+bunx github:dzackgarza/plannotator-dzg-fork#main submit plan.md
 
 # Check daemon status
-bunx github:dzackgarza/plannotator-dzg-fork status
+bunx github:dzackgarza/plannotator-dzg-fork#main status
 
 # Wait for user decision (blocking)
-bunx github:dzackgarza/plannotator-dzg-fork wait
+bunx github:dzackgarza/plannotator-dzg-fork#main wait
 ```
 
 The CLI is harness-agnostic — works with Claude Code, OpenCode, or any agent system.
@@ -36,7 +36,7 @@ The CLI is harness-agnostic — works with Claude Code, OpenCode, or any agent s
 ```bash
 mkdir -p .agents/plans
 echo "# Feature Implementation Plan\n..." > .agents/plans/auth-system.md
-bunx github:dzackgarza/plannotator-dzg-fork submit .agents/plans/auth-system.md
+bunx github:dzackgarza/plannotator-dzg-fork#main submit .agents/plans/auth-system.md
 ```
 
 **Why durable files:**
@@ -81,7 +81,7 @@ Draft the plan in the durable location. Include:
 ### 3. Submit Plan (Daemon Auto-Starts)
 
 ```bash
-bunx github:dzackgarza/plannotator-dzg-fork submit .agents/plans/feature.md
+bunx github:dzackgarza/plannotator-dzg-fork#main submit .agents/plans/feature.md
 ```
 
 **The daemon will:**
@@ -108,7 +108,7 @@ If you have access to a background terminal or PTY, submit there and let it run:
 
 ```bash
 # Terminal 1 (background)
-bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
+bunx github:dzackgarza/plannotator-dzg-fork#main submit plan.md
 # ... blocks until user acts ...
 
 # Terminal 2 (continue working)
@@ -119,10 +119,10 @@ bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
 
 ```bash
 # Submit
-bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
+bunx github:dzackgarza/plannotator-dzg-fork#main submit plan.md
 
 # In another process/turn, check if done
-bunx github:dzackgarza/plannotator-dzg-fork wait
+bunx github:dzackgarza/plannotator-dzg-fork#main wait
 ```
 
 **CRITICAL: No timeouts.**
@@ -171,7 +171,7 @@ EOF
 # (Use Edit tool to insert new section)
 
 # Resubmit
-bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
+bunx github:dzackgarza/plannotator-dzg-fork#main submit plan.md
 # Tool shows diff: +20 lines in "Error Handling" section
 ```
 
@@ -284,13 +284,13 @@ plannotator submit plan.md  # Waits as long as needed
 
 ```bash
 # Terminal 1 (PTY/background - leave open)
-bunx github:dzackgarza/plannotator-dzg-fork submit .agents/plans/feature.md
+bunx github:dzackgarza/plannotator-dzg-fork#main submit .agents/plans/feature.md
 # ... blocking, waiting for user ...
 
 # Terminal 2 (main agent)
 # Continue other work
 # Periodically check if decision arrived:
-bunx github:dzackgarza/plannotator-dzg-fork status
+bunx github:dzackgarza/plannotator-dzg-fork#main status
 # Shows: "awaiting-response" or "idle" (decision received)
 ```
 
@@ -315,13 +315,13 @@ When decision arrives, Terminal 1 unblocks with exit code and feedback.
 
 Check daemon status:
 ```bash
-bunx github:dzackgarza/plannotator-dzg-fork status
+bunx github:dzackgarza/plannotator-dzg-fork#main status
 ```
 
 If stuck, clear and resubmit:
 ```bash
-bunx github:dzackgarza/plannotator-dzg-fork clear
-bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
+bunx github:dzackgarza/plannotator-dzg-fork#main clear
+bunx github:dzackgarza/plannotator-dzg-fork#main submit plan.md
 ```
 
 **Q: User keeps denying plan?**
@@ -336,7 +336,7 @@ Review feedback carefully. Are you:
 
 Set fixed port:
 ```bash
-PLANNOTATOR_PORT=43000 bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
+PLANNOTATOR_PORT=43000 bunx github:dzackgarza/plannotator-dzg-fork#main submit plan.md
 ```
 
 **Q: Can't find planning skills?**

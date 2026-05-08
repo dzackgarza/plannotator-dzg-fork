@@ -31,15 +31,17 @@ Exit code + feedback to agent
 Run directly from GitHub:
 
 ```bash
-bunx github:dzackgarza/plannotator-dzg-fork submit plan.md
-bunx github:dzackgarza/plannotator-dzg-fork review
-bunx github:dzackgarza/plannotator-dzg-fork status
+bunx github:dzackgarza/plannotator-dzg-fork#main submit plan.md
+bunx github:dzackgarza/plannotator-dzg-fork#main review
+bunx github:dzackgarza/plannotator-dzg-fork#main status
 ```
+
+**Note:** `#main` bypasses bunx cache to always fetch the latest version.
 
 Add to shell rc for convenience:
 
 ```bash
-alias plannotator='bunx --bun github:dzackgarza/plannotator-dzg-fork'
+alias plannotator='bunx --bun github:dzackgarza/plannotator-dzg-fork#main'
 ```
 
 ### Option 2: Install from source
