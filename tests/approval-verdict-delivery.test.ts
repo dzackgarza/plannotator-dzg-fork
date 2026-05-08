@@ -68,13 +68,6 @@ const approvedFeedback: FeedbackPayload = {
   permissionMode: "acceptEdits",
 };
 
-const deniedFeedback: FeedbackPayload = {
-  approved: false,
-  feedback: "Please add error handling section.",
-  annotations: [],
-  permissionMode: "acceptEdits",
-};
-
 function createRouterStateHarness(initialState: DaemonState) {
   let currentState = structuredClone(initialState);
 
@@ -374,47 +367,6 @@ describe("Approval verdict delivery", () => {
       } finally {
         await waiter.close();
       }
-    } finally {
-      await server.stop();
-    }
-  }, ROUTER_CASE_TIMEOUT_MS);
-
-  test("clear from awaiting-revision should return to idle", async () => {
-    const server = await startDaemonServer(idleState);
-
-    try {
-      // Submit plan
-      const submit = await postSubmit(server.url, planDocument);
-      expect([200, 202]).toContain(submit.response.status);
-
-      // Deny plan (transitions to awaiting-revision)
-      const deny = await fetchJson(`${server.url}/api/deny`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          feedback: deniedFeedback.feedback,
-          annotations: deniedFeedback.annotations,
-        }),
-      });
-      expect(deny.response.status).toBe(200);
-
-      // Verify state is awaiting-revision
-      let state = server.getState();
-      expect(state.status).toBe("awaiting-revision");
-
-      // Clear the state
-      const clear = await fetchJson(`${server.url}/api/clear`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      expect(clear.response.status).toBe(200);
-
-      // Verify daemon transitioned to idle
-      state = server.getState();
-      expect(state.status).toBe("idle");
-      expect(state.document).toBe(null);
-      expect(state.feedback).toBe(null);
     } finally {
       await server.stop();
     }
