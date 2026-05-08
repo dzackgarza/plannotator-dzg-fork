@@ -101,7 +101,7 @@ type ActiveAnnotateContext = {
 };
 
 const EXIT_OK = 0;
-const EXIT_DENIED = 1;
+const EXIT_NEEDS_REVISION = 1; // User provided feedback, agent should revise (NOT a failure)
 const EXIT_ILLEGAL_STATE = 2;
 const EXIT_DAEMON_FAILURE = 3;
 const EXIT_CANCELLED = 130;
@@ -782,7 +782,7 @@ function renderPlainVerdict(payload: VerdictPayload): never {
   }
 
   if (feedback.cancelled) {
-    process.exit(EXIT_DENIED);
+    process.exit(EXIT_NEEDS_REVISION);
   }
 
   if (document.mode === "review" || document.mode === "annotate") {
@@ -798,7 +798,7 @@ function renderPlainVerdict(payload: VerdictPayload): never {
     }
   }
 
-  process.exit(feedback.approved ? EXIT_OK : EXIT_DENIED);
+  process.exit(feedback.approved ? EXIT_OK : EXIT_NEEDS_REVISION);
 }
 
 function renderJsonVerdict(payload: VerdictPayload): never {
@@ -821,14 +821,14 @@ function renderJsonVerdict(payload: VerdictPayload): never {
   );
 
   if (feedback.cancelled) {
-    process.exit(EXIT_DENIED);
+    process.exit(EXIT_NEEDS_REVISION);
   }
 
   if (document.mode === "review" || document.mode === "annotate") {
     process.exit(EXIT_OK);
   }
 
-  process.exit(feedback.approved ? EXIT_OK : EXIT_DENIED);
+  process.exit(feedback.approved ? EXIT_OK : EXIT_NEEDS_REVISION);
 }
 
 function renderHookVerdict(payload: VerdictPayload): never {
@@ -1036,7 +1036,7 @@ async function runStatus(strictDaemonStatus: boolean): Promise<never> {
   const result = await daemonStatus(daemonLaunchOptions(port));
   if (result.verdict !== "running") {
     console.log(`stopped ${getDaemonUrl(port)}`);
-    process.exit(strictDaemonStatus ? EXIT_DENIED : EXIT_OK);
+    process.exit(strictDaemonStatus ? EXIT_NEEDS_REVISION : EXIT_OK);
   }
 
   await waitForDaemonLiveness();
