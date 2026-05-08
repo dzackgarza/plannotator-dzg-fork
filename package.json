@@ -18,6 +18,7 @@
     "plannotator": "./apps/hook/server/index.ts"
   },
   "scripts": {
+    "prepare": "bun install && bun run build",
     "dev:hook": "bun run --cwd apps/hook dev",
     "dev:review": "bun run --cwd apps/review dev",
     "build:hook": "bun run build:review && bun run --cwd apps/hook build",
