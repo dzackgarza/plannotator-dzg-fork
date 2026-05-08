@@ -15,16 +15,17 @@
   },
   "workspaces": ["apps/*", "packages/*"],
   "bin": {
-    "plannotator": "./apps/hook/server/index.ts"
+    "plannotator": "./dist/cli.js"
   },
   "scripts": {
     "prepare": "bun install && bun run build",
     "dev:hook": "bun run --cwd apps/hook dev",
     "dev:review": "bun run --cwd apps/review dev",
+    "build:cli": "bun build apps/hook/server/index.ts --outfile dist/cli.js --target bun --minify --sourcemap",
     "build:hook": "bun run build:review && bun run --cwd apps/hook build",
     "build:opencode": "bun run --cwd apps/opencode-plugin build",
     "build:review": "bun run --cwd apps/review build",
-    "build": "bun run build:hook && bun run build:opencode",
+    "build": "bun run build:cli && bun run build:hook && bun run build:opencode",
     "dev:vscode": "bun run --cwd apps/vscode-extension watch",
     "build:vscode": "bun run --cwd apps/vscode-extension build",
     "package:vscode": "bun run --cwd apps/vscode-extension package",
