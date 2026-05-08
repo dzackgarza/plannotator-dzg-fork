@@ -481,6 +481,25 @@ export function createDaemonRouter(
         }
 
         const document = getRequiredDocument(currentState);
+
+        // If in awaiting-revision state, return feedback-sent response
+        if (currentState.status === "awaiting-revision") {
+          return Response.json({
+            status: "awaiting-revision",
+            document: {
+              id: document.id,
+              mode: document.mode,
+              content: document.content,
+              origin: document.origin,
+              filePath: document.filePath,
+              gitRef: document.gitRef,
+            },
+            feedback: currentState.feedback,
+            message: "Feedback has been sent to the agent. Waiting for revised submission.",
+            ...(document.mode === "annotate" ? getAnnotatePayload(stateAdapter) : getPlanPayload(stateAdapter)),
+          });
+        }
+
         if (document.mode === "annotate") {
           return Response.json({
             plan: document.content,
