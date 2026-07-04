@@ -15,6 +15,10 @@ dist-ssr
 .astro
 *.local
 
+# Accidental local bundle outputs from building the hook server in-place
+apps/hook/server/cli.js
+apps/hook/server/cli.js.map
+
 # npm pack output
 *.tgz
 

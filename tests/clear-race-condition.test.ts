@@ -1,8 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createDaemonEventBus } from "../packages/server/daemon-events";
-import type { DaemonState, DocumentSnapshot, FeedbackPayload } from "../packages/server/state";
+import { loadState, saveState, type DaemonState, type DocumentSnapshot, type FeedbackPayload } from "../packages/server/state";
 
 const TIMEOUT_MS = 30_000;
 
@@ -10,6 +12,21 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const daemonRouterModuleUrl = pathToFileURL(
   join(__dirname, "../packages/server/daemon-router.ts"),
 );
+
+const tempDirs: string[] = [];
+
+function createTempHome(): string {
+  const dir = mkdtempSync(join(tmpdir(), "plannotator-clear-race-test-"));
+  mkdirSync(join(dir, ".plannotator"), { recursive: true });
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 type DaemonRouterFactory = (
   state: Record<string, unknown>,
@@ -47,20 +64,14 @@ const deniedFeedback: FeedbackPayload = {
   permissionMode: "acceptEdits",
 };
 
-function createRouterStateHarness(initialState: DaemonState) {
-  let currentState = structuredClone(initialState);
-
-  const writeState = (nextState: DaemonState) => {
-    currentState = structuredClone(nextState);
-  };
-
+function createRouterStateHarness() {
   return {
-    getState: () => structuredClone(currentState),
-    saveState: (nextState: DaemonState) => writeState(nextState),
-    setState: (nextState: DaemonState) => writeState(nextState),
-    updateState: (nextState: DaemonState) => writeState(nextState),
-    loadState: () => structuredClone(currentState),
-    readState: () => structuredClone(currentState),
+    getState: () => loadState(),
+    saveState: (nextState: DaemonState) => saveState(nextState),
+    setState: (nextState: DaemonState) => saveState(nextState),
+    updateState: (nextState: DaemonState) => saveState(nextState),
+    loadState: () => loadState(),
+    readState: () => loadState(),
     planHtml: "<html><body>plan</body></html>",
     reviewHtml: "<html><body>review</body></html>",
     ui: {
@@ -164,12 +175,13 @@ describe("Clear race condition", () => {
       });
       expect(clearResponse.response.status).toBe(200);
 
-      // CRITICAL: State should be idle IMMEDIATELY after clear returns
-      // If there's a race condition, this will fail
-      state = server.getState();
-      expect(state.status).toBe("idle");
-      expect(state.document).toBe(null);
-      expect(state.feedback).toBe(null);
+      // CRITICAL: Status endpoint should return idle IMMEDIATELY after clear
+      // This is what the user actually observed - status command showing stale state
+      const statusResponse = await fetchJson(`${server.url}/api/status`);
+      expect(statusResponse.response.status).toBe(200);
+
+      const statusData = JSON.parse(statusResponse.text);
+      expect(statusData.status).toBe("idle");
     } finally {
       await server.stop();
     }

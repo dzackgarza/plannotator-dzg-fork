@@ -38,6 +38,20 @@ bunx github:dzackgarza/plannotator-dzg-fork#main status
 
 **Note:** `#main` bypasses bunx cache to always fetch the latest version.
 
+For AI-agent workflows, install the bundled workflow skill from the CLI:
+
+```bash
+# Repo-local guidance for the current project
+bunx github:dzackgarza/plannotator-dzg-fork#main install-skill --local
+
+# Global guidance for all projects
+bunx github:dzackgarza/plannotator-dzg-fork#main install-skill --global
+```
+
+The installer always fetches the canonical skill file from
+`https://raw.githubusercontent.com/dzackgarza/plannotator-dzg-fork/main/SKILL.md`.
+Use the same command after skill updates to refresh the local copy.
+
 Add to shell rc for convenience:
 
 ```bash
@@ -255,6 +269,8 @@ plannotator annotate <file> [--json]      Open markdown file in annotation UI
 plannotator wait [--json]                 Wait for a verdict from the current active session
 plannotator clear [--force]               Reset daemon to idle state
 plannotator open                          Reopen the active session in the browser
+plannotator install-skill --local|--global
+                                          Install the agent workflow skill
 ```
 
 `--diff-type` values: `uncommitted` (default), `staged`, `unstaged`, `last-commit`, `branch`, `worktree:<branch>`.

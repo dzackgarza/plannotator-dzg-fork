@@ -108,6 +108,8 @@ const EXIT_CANCELLED = 130;
 const LIVENESS_TIMEOUT_MS = 10_000;
 const LIVENESS_POLL_MS = 100;
 const WAIT_STREAM_RETRIES = 1;
+const WORKFLOW_SKILL_URL =
+  "https://raw.githubusercontent.com/dzackgarza/plannotator-dzg-fork/main/SKILL.md";
 process.on("exit", () => unregisterSession());
 
 function usageText(): string {
@@ -221,7 +223,8 @@ function helpText(): string {
     "✓ Background terminal recommended",
     "  - Run submit in PTY/background terminal",
     "  - Continue other work while waiting",
-    "  - Poll status or wait for callback",
+    "  - Return to the submit process or run wait to consume feedback",
+    "  - status is diagnostic only; it does not deliver feedback",
     "",
     "═══════════════════════════════════════════════════════════════",
     "                   INSTALL WORKFLOW SKILL",
@@ -1122,34 +1125,43 @@ async function runInstallSkill(args: string[]): Promise<never> {
     fail("Error: Cannot specify both --local and --global", EXIT_ILLEGAL_STATE);
   }
 
-  // Determine source and destination paths
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const repoRoot = join(scriptDir, "../../..");
-  const skillSource = join(repoRoot, "SKILL.md");
-
-  if (!existsSync(skillSource)) {
-    fail(`Error: SKILL.md not found at ${skillSource}`, EXIT_DAEMON_FAILURE);
-  }
-
   const targetDir = hasLocal
     ? join(process.cwd(), ".agents/skills")
     : join(homedir(), ".agents/skills");
   const targetPath = join(targetDir, "plannotator-workflow.md");
 
-  // Create target directory
-  mkdirSync(targetDir, { recursive: true });
+  const response = await fetch(WORKFLOW_SKILL_URL);
+  if (!response.ok) {
+    fail(
+      [
+        `Error: Could not fetch workflow skill from ${WORKFLOW_SKILL_URL}`,
+        `HTTP ${response.status} ${response.statusText}`,
+      ].join("\n"),
+      EXIT_DAEMON_FAILURE,
+    );
+  }
 
-  // Copy skill file
-  const skillContent = readFileSync(skillSource, "utf8");
+  const skillContent = await response.text();
+  if (!skillContent.includes("name: plannotator-workflow")) {
+    fail(
+      `Error: Fetched workflow skill from ${WORKFLOW_SKILL_URL} did not look like the plannotator skill.`,
+      EXIT_DAEMON_FAILURE,
+    );
+  }
+
+  mkdirSync(targetDir, { recursive: true });
   writeFileSync(targetPath, skillContent, "utf8");
 
   const location = hasLocal ? "local (./.agents/skills/)" : "global (~/.agents/skills/)";
   console.log(`✓ Installed plannotator workflow skill to ${location}`);
   console.log(`  ${targetPath}`);
+  console.log(`  Source: ${WORKFLOW_SKILL_URL}`);
   console.log("");
   console.log("The skill explains:");
   console.log("  • CLI-first workflow via bunx (zero install)");
   console.log("  • Durable plan file strategy");
+  console.log("  • Decision/status plan framing for human reviewers");
+  console.log("  • Waiting for and consuming feedback from submit/wait");
   console.log("  • Edit vs rewrite patterns");
   console.log("  • Revision cycle best practices");
   console.log("  • Post-approval workflow");
