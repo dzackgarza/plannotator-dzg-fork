@@ -124,7 +124,7 @@ Blocks the agent until the user approves or rejects the plan in the browser UI.
 
 **Behavior:**
 
-1. Shells out to `plannotator submit --json` which forwards the plan to the local daemon.
+1. Shells out to `plannotator submit --json --origin opencode` which forwards the plan to the local daemon.
 2. The daemon opens the browser on the local machine.
 3. Blocks until the user acts in the UI.
 4. On **approve**: returns a success string; if the user added annotations, they are included as implementation notes.
@@ -261,7 +261,7 @@ plannotator daemon start [--foreground]   Start daemon (background by default)
 plannotator daemon stop                   Stop daemon
 plannotator daemon status                 Show daemon state
 
-plannotator submit [file] [--mode plan|annotate] [--no-browser] [--commit-message <msg>] [--json]
+plannotator submit [file] [--mode plan|annotate] [--no-browser] [--commit-message <msg>] [--origin <agent>] [--json]
                                           Submit a plan or markdown file for review
 plannotator review [--diff-type <type>] [--json]
                                           Open current git diff in code review UI
@@ -281,11 +281,20 @@ The daemon binds to `localhost` only and opens the browser automatically. Port i
 
 ### Plan history
 
-Approved plans are saved to `~/.plannotator/plans/{project}/{slug}.md` where:
+Submitted plans are saved to `~/.plannotator/plans/{project}/{slug}.md` where:
 - `project` is derived from the git repo root directory name (sanitized)
 - `slug` is `{first-heading-kebab-case}-YYYY-MM-DD`
 
-The directory is a git repo. Each plan submission commits the current content; approve/deny events are recorded as additional empty commits with feedback in the message body.
+The directory is a git repo. New plan versions are committed with the submitting
+agent as the Git author, while Plannotator remains the committer. Claude Code
+hook submissions and the OpenCode plugin supply their respective origins.
+Other agents can use `plannotator submit plan.md --origin pi` (or their own
+lowercase identifier, with letters and digits separated by hyphens, underscores
+or dots). The agent identifier becomes the author email's local part at
+`plannotator.ai`; an ordinary file submission without an origin uses the
+Plannotator bot identity. Identical content creates no additional version.
+
+Plan content is committed on submission, before the review decision.
 
 ### Obsidian integration
 

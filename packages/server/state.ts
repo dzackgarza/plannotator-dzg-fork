@@ -12,7 +12,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export type DocMode = "plan" | "review" | "annotate";
-export type DocumentOrigin = "claude-code" | "opencode";
+export type DocumentOrigin = string;
+
+export function isPlanOrigin(value: unknown): value is DocumentOrigin {
+  return typeof value === "string" && value === value.trim() &&
+    /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/.test(value);
+}
 
 export type DocumentSnapshot = {
   id: string;
@@ -147,7 +152,10 @@ function validateDocumentSnapshot(
   }
 
   const origin = value.origin;
-  if (origin !== "claude-code" && origin !== "opencode") {
+  if (!isPlanOrigin(origin)) {
+    throw new Error(`${label}.origin must be a lowercase agent identifier`);
+  }
+  if (mode !== "plan" && origin !== "claude-code" && origin !== "opencode") {
     throw new Error(`${label}.origin must be claude-code or opencode`);
   }
 
@@ -289,8 +297,6 @@ export function transition(current: DaemonState, event: StateEvent): DaemonState
     validatedCurrent.status === "awaiting-response" &&
     validatedEvent.type === "resolve"
   ) {
-    // If approved, go to idle (workflow complete)
-    // If needs revision, go to awaiting-revision
     if (validatedEvent.feedback.approved) {
       return createIdleState();
     }
@@ -308,7 +314,6 @@ export function transition(current: DaemonState, event: StateEvent): DaemonState
   }
 
   if (validatedCurrent.status === "awaiting-revision" && validatedEvent.type === "submit") {
-    // Allow revision submission: must match the document being revised
     const currentDoc = validatedCurrent.document;
     const newDoc = validatedEvent.document;
 

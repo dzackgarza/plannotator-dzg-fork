@@ -1,8 +1,8 @@
-// @bun
-// index.ts
+
+
 import { tool } from "@opencode-ai/plugin";
 
-// tool-helpers.ts
+
 import { spawn } from "child_process";
 import { join } from "path";
 var REVIEW_TOOL_DIFF_TYPES = [
@@ -181,12 +181,13 @@ async function runPlannotatorSubmitCli(args, env, timeoutMs) {
       commit_message: args.commit_message
     }
   });
-  const result = await runPlannotatorCli(["submit", "--json"], env.directory, {
+  const cliArgs = ["submit", "--json", "--origin", "opencode"];
+  const result = await runPlannotatorCli(cliArgs, env.directory, {
     stdinText,
     timeoutMs
   });
   if (result.exitCode !== 0 && result.exitCode !== 1) {
-    throw new Error(describeCliFailure(["submit", "--json"], result));
+    throw new Error(describeCliFailure(cliArgs, result));
   }
   return parseCliVerdict(result.stdout);
 }
@@ -244,7 +245,7 @@ ${verdict.feedback}`;
   return `Annotation completed for ${args.file_path} with no requested changes.`;
 }
 
-// index.ts
+
 var DEFAULT_PLAN_TIMEOUT_SECONDS = 345600;
 var PlannotatorPlugin = async (ctx) => {
   function getPlanTimeoutSeconds() {
@@ -466,6 +467,6 @@ Please revise your plan based on this feedback and call \`submit_plan\` again wh
 };
 var opencode_plugin_default = PlannotatorPlugin;
 export {
-  opencode_plugin_default as default,
-  PlannotatorPlugin
+  PlannotatorPlugin,
+  opencode_plugin_default as default
 };

@@ -1,20 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Plannotator CLI for Claude Code
- *
- * Public daemon-backed commands:
- *   plannotator daemon start|stop|status
- *   plannotator start|stop|status
- *   plannotator submit [file] [--mode plan|annotate] [--no-browser] [--commit-message <msg>]
- *   plannotator review [--diff-type ...]
- *   plannotator annotate <file>
- *   plannotator wait
- *   plannotator clear [--force]
- *   plannotator open
- *
- * Default invocation with no args remains the Claude Code hook entrypoint,
- * but it now routes through the daemon-backed submit/wait flow.
- */
 
 import { daemonStatus, getServerPort, openBrowser, startDaemonDetached, stopDaemon } from "@plannotator/server";
 import { notifyDocumentEnteredReview } from "@plannotator/server/notify";
@@ -32,7 +16,7 @@ import {
 } from "@plannotator/server/git";
 import { detectProjectName } from "@plannotator/server/project";
 import { generateSlug, getPlanVersion, getVersionCount, saveToHistory } from "@plannotator/server/storage";
-import { loadState, saveState, type DaemonState, type DocumentSnapshot } from "@plannotator/server/state";
+import { isPlanOrigin, loadState, saveState, type DaemonState, type DocumentSnapshot } from "@plannotator/server/state";
 import { createDaemonRouter } from "../../../packages/server/daemon-router";
 import { createDaemonEventBus } from "../../../packages/server/daemon-events";
 import { handleDraftDelete, handleDraftLoad, handleDraftSave, handleImage, handleUpload } from "../../../packages/server/shared-handlers";
@@ -46,15 +30,12 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import path, { join } from "node:path";
 
-// @ts-ignore - Bun import attribute for text
 import planHtml from "../dist/index.html" with { type: "text" };
 const planHtmlContent = planHtml as unknown as string;
 
-// @ts-ignore - Bun import attribute for text
 import reviewHtml from "../dist/review.html" with { type: "text" };
 const reviewHtmlContent = reviewHtml as unknown as string;
 
-// @ts-ignore - Bun import attribute for json
 import workspacePackageJson from "../../../package.json" with { type: "json" };
 const PACKAGE_VERSION = (workspacePackageJson as { version?: string }).version ?? "0.0.0";
 
@@ -101,7 +82,7 @@ type ActiveAnnotateContext = {
 };
 
 const EXIT_OK = 0;
-const EXIT_NEEDS_REVISION = 1; // User provided feedback, agent should revise (NOT a failure)
+const EXIT_NEEDS_REVISION = 1;
 const EXIT_ILLEGAL_STATE = 2;
 const EXIT_DAEMON_FAILURE = 3;
 const EXIT_CANCELLED = 130;
@@ -117,7 +98,7 @@ function usageText(): string {
     "plannotator — daemon-backed plan & code review CLI",
     "",
     "Usage:",
-    "  plannotator submit <file> [--commit-message <msg>] [--json]",
+    "  plannotator submit <file> [--commit-message <msg>] [--origin <agent>] [--json]",
     "  plannotator review [--diff-type <type>] [--json]",
     "  plannotator annotate <file> [--json]",
     "  plannotator wait [--request-id <id>] [--json]",
@@ -449,7 +430,7 @@ function parseCommand(argv: string[]): string[] {
     process.env.PLANNOTATOR_BROWSER = browser;
   }
 
-  if (takeFlag(args, "--help") || takeFlag(args, "-h")) {
+  if (args[0] !== "submit" && (takeFlag(args, "--help") || takeFlag(args, "-h"))) {
     console.log(helpText());
     process.exit(EXIT_OK);
   }
@@ -792,7 +773,6 @@ function renderPlainVerdict(payload: VerdictPayload): never {
     process.exit(EXIT_OK);
   }
 
-  // For plans, instruct the agent on next steps
   if (document.mode === "plan") {
     if (feedback.approved) {
       console.log("\nPlan approved. Proceed with implementation.");
@@ -898,7 +878,7 @@ async function submitDocument(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         document,
-        noBrowser: true, // CLI handles browser opening, not daemon
+        noBrowser: true,
         permissionMode: options.permissionMode,
         commitMessage: options.commitMessage,
         ...options.submitPayload,
@@ -990,7 +970,7 @@ async function submitPlanFromHook(): Promise<never> {
   fail("submitPlanFromHook returned unexpectedly.", EXIT_DAEMON_FAILURE);
 }
 
-async function resolvePlanSubmitSource(fileArg: string | undefined): Promise<PlanSubmitSource> {
+async function resolvePlanSubmitSource(fileArg: string | undefined, origin: string | undefined): Promise<PlanSubmitSource> {
   if (!fileArg) {
     const rawEvent = await Bun.stdin.text();
     let parsed: unknown;
@@ -1013,7 +993,7 @@ async function resolvePlanSubmitSource(fileArg: string | undefined): Promise<Pla
       document: {
         id: generateSlug(plan),
         mode: "plan",
-        origin: "claude-code",
+        origin: origin ?? "claude-code",
         content: plan,
       },
       permissionMode: record.permission_mode ?? "default",
@@ -1027,7 +1007,7 @@ async function resolvePlanSubmitSource(fileArg: string | undefined): Promise<Pla
     document: {
       id: generateSlug(content),
       mode: "plan",
-      origin: "claude-code",
+      origin: origin ?? "plannotator",
       content,
       filePath: absolutePath,
     },
@@ -1178,10 +1158,6 @@ async function resolveWaitRequestId(requestId?: string): Promise<string | undefi
 
   const currentState = await readDaemonStateFromHttp().catch(() => null);
   if (currentState?.document?.id) {
-    // Auto-bind when the daemon has an active or buffered request.
-    // This covers both awaiting-response (in_review) and resolved (verdict_ready)
-    // states, so `plannotator wait` recovers a buffered verdict without
-    // requiring the user to discover and pass --request-id manually.
     if (currentState.status === "awaiting-response" || currentState.status === "awaiting-revision") {
       return currentState.document.id;
     }
@@ -1312,6 +1288,7 @@ async function runSubmit(args: string[]): Promise<never> {
         "  --mode <plan|annotate>     Submission mode (default: plan)",
         "  --no-browser               Do not open a browser window",
         "  --commit-message <msg>     Attach a commit message to the submission",
+        "  --origin <agent>           Plan author identifier (e.g. pi, opencode)",
         "  --json                     Output verdict as JSON on stdout",
         "  --request-id <id>          Request ID to associate with this submission",
         "  --help, -h                 Show this help",
@@ -1323,9 +1300,16 @@ async function runSubmit(args: string[]): Promise<never> {
   const mode = takeOption(args, "--mode") ?? "plan";
   const noBrowser = takeFlag(args, "--no-browser");
   const commitMessage = takeOption(args, "--commit-message");
+  const origin = takeOption(args, "--origin");
+  if (origin !== undefined && !isPlanOrigin(origin)) {
+    fail("Plan origin must be a lowercase agent identifier.", EXIT_ILLEGAL_STATE);
+  }
   const fileArg = args[0];
 
   if (mode === "annotate") {
+    if (origin !== undefined) {
+      fail("--origin is only supported for plan submissions.", EXIT_ILLEGAL_STATE);
+    }
     if (!fileArg) {
       fail("submit --mode annotate requires <file>.", EXIT_ILLEGAL_STATE);
     }
@@ -1338,7 +1322,7 @@ async function runSubmit(args: string[]): Promise<never> {
     fail(`Unsupported submit mode ${JSON.stringify(mode)}.`, EXIT_ILLEGAL_STATE);
   }
 
-  const source = await resolvePlanSubmitSource(fileArg);
+  const source = await resolvePlanSubmitSource(fileArg, origin);
   await submitDocument(source.document, {
     noBrowser,
     permissionMode: source.permissionMode,
@@ -1470,7 +1454,6 @@ async function startForegroundDaemon(): Promise<void> {
           await openBrowser(uiUrl);
         }
 
-        // Session registration must not wait on notification side effects.
         void notifyDocumentEnteredReview({
           documentTitle: documentTitle(nextState.document),
           daemonUrl: uiUrl,
@@ -1651,7 +1634,6 @@ async function startForegroundDaemon(): Promise<void> {
     fetch: router.fetch,
   });
 
-  // Write discovery files only after the server has successfully bound its port.
   writeDaemonMetadata(getDaemonPort());
   writeFileSync(
     getDaemonLockfilePath(),
@@ -1684,7 +1666,6 @@ async function startForegroundDaemon(): Promise<void> {
 async function main(): Promise<void> {
   const args = parseCommand(process.argv.slice(2));
 
-  // No arguments: show informative usage
   if (args.length === 0) {
     console.log(usageText());
     console.log("");
@@ -1700,7 +1681,6 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Hook mode: when stdin is a plan from Claude Code
   if (args.length === 0 && !process.stdin.isTTY) {
     await submitPlanFromHook();
     return;

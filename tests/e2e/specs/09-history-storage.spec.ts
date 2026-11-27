@@ -1,8 +1,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { execSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runPlannotatorSubmitCli } from "../../../apps/opencode-plugin/tool-helpers";
+import { withEnv } from "../../../apps/opencode-plugin/test-helpers";
 import {
   buildBinary,
   createSandbox,
@@ -13,10 +15,6 @@ import {
   type Sandbox,
 } from "../helpers";
 
-// ADR: plan storage layout
-//   ${HOME}/.plannotator/plans/{project}/{slug}.md   — plan file
-//   {project} dir is a git repo
-//   slug = {heading-kebab}-YYYY-MM-DD, or plan-YYYY-MM-DD if no heading
 
 const FIXTURES_DIR = resolve(
   fileURLToPath(new URL("../", import.meta.url)),
@@ -84,9 +82,7 @@ describe("09-history-storage", () => {
     await submitHandle.waitForExit();
   }
 
-  // ─── 9.1 plan directory structure ─────────────────────────────────────────
   test("9.1 approved plan creates git repo with slug.md in plans/{project}/", async () => {
-    // Create a temp git repo to serve as cwd (project detection from git root)
     const testRepo = execSync(`bash "${join(REPOS_DIR, "make-repo.sh")}"`, {
       encoding: "utf8",
     }).trim();
@@ -121,14 +117,11 @@ describe("09-history-storage", () => {
       expect(projects.length).toBeGreaterThan(0);
 
       const projectDir = join(plansRoot, projects[0]);
-      // Must be a git repo
       expect(existsSync(join(projectDir, ".git"))).toBe(true);
 
-      // Must contain a slug.md file
       const files = readdirSync(projectDir).filter((f) => f.endsWith(".md"));
       expect(files.length).toBeGreaterThan(0);
 
-      // Slug must follow pattern: {heading}-YYYY-MM-DD
       const today = new Date().toISOString().slice(0, 10);
       expect(files.some((f) => f.endsWith(`${today}.md`))).toBe(true);
     } finally {
@@ -136,7 +129,6 @@ describe("09-history-storage", () => {
     }
   }, 40_000);
 
-  // ─── 9.2 git log contains commit-message value ────────────────────────────
   test("9.2 git log in plans dir contains commit-message string", async () => {
     const daemon = await startDaemon({ port, home: sandbox.home, binary });
     try {
@@ -158,7 +150,116 @@ describe("09-history-storage", () => {
     }
   }, 40_000);
 
-  // ─── 9.3 project name detection: inside a git repo ────────────────────────
+  test("records the submitting agent in each plan history commit", async () => {
+    const daemon = await startDaemon({ port, home: sandbox.home, binary });
+    const planFile = join(sandbox.home, "plan.md");
+    const plansRoot = join(sandbox.home, ".plannotator", "plans");
+    const authors = () => {
+      const project = readdirSync(plansRoot)[0];
+      return execFileSync("git", ["log", "--reverse", "--format=%an%x09%ae"], {
+        cwd: join(plansRoot, project),
+        encoding: "utf8",
+      }).trim().split("\n").map((line) => line.split("\t"));
+    };
+
+    async function rejectSubmission(): Promise<void> {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const state = await (await fetch(daemonUrl("/api/state"))).json();
+        if (state.status === "awaiting-response") {
+          const response = await fetch(daemonUrl("/api/deny"), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ feedback: "Revise the plan" }),
+          });
+          expect(response.ok).toBe(true);
+          return;
+        }
+        await Bun.sleep(50);
+      }
+      throw new Error("Submission did not enter review");
+    }
+
+    try {
+      await withEnv({
+        ...env(),
+        PLANNOTATOR_CLI_ENTRYPOINT: fileURLToPath(new URL("../../../apps/hook/server/index.ts", import.meta.url)),
+      }, async () => {
+        const [verdict] = await Promise.all([
+          runPlannotatorSubmitCli(
+            { plan: "# Attribution\nOpenCode", commit_message: "first plan" },
+            { directory: sandbox.home, client: { session: { async prompt() {} } } },
+            15_000,
+          ),
+          rejectSubmission(),
+        ]);
+        expect(verdict.approved).toBe(false);
+      });
+      expect(authors()).toEqual([["OpenCode", "opencode@plannotator.ai"]]);
+
+      const [hook] = await Promise.all([
+        runCli(["submit", "--json", "--no-browser"], {
+          env: env(),
+          stdin: JSON.stringify({ tool_input: { plan: "# Attribution\nClaude Code" } }),
+        }),
+        rejectSubmission(),
+      ]);
+      expect(hook.exitCode).toBe(1);
+
+      for (const origin of ["pi", "other-agent"]) {
+        writeFileSync(planFile, `# Attribution\n${origin}`);
+        const [result] = await Promise.all([
+          runCli(["submit", planFile, "--origin", origin, "--no-browser"], { env: env() }),
+          rejectSubmission(),
+        ]);
+        expect(result.exitCode).toBe(1);
+      }
+
+      writeFileSync(planFile, "# Attribution\nUnspecified caller");
+      const [direct] = await Promise.all([
+        runCli(["submit", planFile, "--no-browser"], { env: env() }),
+        rejectSubmission(),
+      ]);
+      expect(direct.exitCode).toBe(1);
+
+      const expectedAuthors = [
+        ["OpenCode", "opencode@plannotator.ai"],
+        ["Claude Code", "claude-code@plannotator.ai"],
+        ["Pi", "pi@plannotator.ai"],
+        ["other-agent", "other-agent@plannotator.ai"],
+        ["Plannotator", "bot@plannotator.ai"],
+      ];
+      expect(authors()).toEqual(expectedAuthors);
+
+      const [duplicate] = await Promise.all([
+        runCli(["submit", planFile, "--origin", "pi", "--no-browser"], { env: env() }),
+        rejectSubmission(),
+      ]);
+      expect(duplicate.exitCode).toBe(1);
+      expect(authors()).toEqual(expectedAuthors);
+
+      const previousState = await (await fetch(daemonUrl("/api/state"))).json();
+      const invalidOrigin = "bad<author@example.com>";
+      const invalidCli = await runCli(
+        ["submit", planFile, "--origin", invalidOrigin, "--no-browser"],
+        { env: env() },
+      );
+      expect(invalidCli.exitCode).toBe(2);
+      const invalidApi = await fetch(daemonUrl("/api/submit"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          document: { ...previousState.document, origin: invalidOrigin, content: "# Attribution\nInvalid" },
+        }),
+      });
+      expect(invalidApi.status).toBe(400);
+      expect(await (await fetch(daemonUrl("/api/state"))).json()).toEqual(previousState);
+      expect(authors()).toEqual(expectedAuthors);
+    } finally {
+      await daemon.stop();
+    }
+  }, 60_000);
+
   test("9.3 project name derives from git repo root name", async () => {
     const testRepo = execSync(`bash "${join(REPOS_DIR, "make-repo.sh")}"`, {
       encoding: "utf8",
@@ -189,22 +290,17 @@ describe("09-history-storage", () => {
 
       const plansRoot = join(sandbox.home, ".plannotator", "plans");
       const projects = readdirSync(plansRoot);
-      // Project name should be derived from the repo root directory name
-      // (sanitized, lowercase, hyphens)
       expect(projects.length).toBeGreaterThan(0);
       const projectName = projects[0];
-      // The test repo is named something like plannotator-e2e-repo.XXXXX
       expect(projectName).toMatch(/plannotator/);
     } finally {
       await daemon.stop();
     }
   }, 40_000);
 
-  // ─── 9.5 deny-resubmit-approve cycle in git history ──────────────────────
   test("9.5 deny-resubmit-approve cycle produces correct git history", async () => {
     const daemon = await startDaemon({ port, home: sandbox.home, binary });
     try {
-      // Submit and deny
       const firstSubmit = runCliBackground(
         ["submit", join(FIXTURES_DIR, "revision-base.md"), "--no-browser", "--commit-message", "initial plan"],
         { env: env() },
@@ -223,7 +319,6 @@ describe("09-history-storage", () => {
       });
       await firstSubmit.waitForExit();
 
-      // Resubmit revised plan
       const secondSubmit = runCliBackground(
         ["submit", join(FIXTURES_DIR, "revision-revised.md"), "--no-browser", "--commit-message", "addressed feedback: added sections"],
         { env: env() },
@@ -242,7 +337,6 @@ describe("09-history-storage", () => {
       });
       await secondSubmit.waitForExit();
 
-      // Check git log
       const plansRoot = join(sandbox.home, ".plannotator", "plans");
       const projects = readdirSync(plansRoot);
       const projectDir = join(plansRoot, projects[0]);
@@ -258,7 +352,6 @@ describe("09-history-storage", () => {
     }
   }, 60_000);
 
-  // ─── 9.4 Project name detection: cwd NOT inside git repo ─────────────────
   test("9.4 project name falls back to cwd directory name when not in a git repo", async () => {
     const { mkdirSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
@@ -292,7 +385,6 @@ describe("09-history-storage", () => {
       if (existsSync(plansRoot)) {
         const projects = readdirSync(plansRoot);
         expect(projects.length).toBeGreaterThan(0);
-        // Project name should be derived from the non-git directory name
         const lastName = nonGitDir.split("/").pop() ?? "";
         const sanitized = lastName.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
         expect(projects.some((p) => p.includes(sanitized.slice(0, 10)))).toBe(true);
@@ -302,7 +394,6 @@ describe("09-history-storage", () => {
     }
   }, 40_000);
 
-  // ─── 9.6 Draft persistence via /api/draft ─────────────────────────────────
   test("9.6 annotation draft saved to /api/draft persists between requests", async () => {
     const daemon = await startDaemon({ port, home: sandbox.home, binary });
     try {
@@ -321,7 +412,6 @@ describe("09-history-storage", () => {
 
       const draft = { annotations: [{ id: "a1", type: "COMMENT", text: "test note", originalText: "foo" }] };
 
-      // Save draft
       const saveResp = await fetch(daemonUrl("/api/draft"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -329,7 +419,6 @@ describe("09-history-storage", () => {
       });
       expect(saveResp.ok).toBe(true);
 
-      // Retrieve draft
       const getResp = await fetch(daemonUrl("/api/draft"));
       expect(getResp.ok).toBe(true);
       const retrieved = (await getResp.json()) as { annotations?: unknown[] };
@@ -347,12 +436,10 @@ describe("09-history-storage", () => {
     }
   }, 40_000);
 
-  // ─── 9.7 Obsidian integration smoke test ──────────────────────────────────
   test("9.7 /api/obsidian/vaults endpoint responds without crashing daemon", async () => {
     const daemon = await startDaemon({ port, home: sandbox.home, binary });
     try {
       const resp = await fetch(daemonUrl("/api/obsidian/vaults"));
-      // Endpoint must exist (200 or 404 is OK; crash/500 is not)
       expect([200, 404]).toContain(resp.status);
       if (resp.ok) {
         const body = (await resp.json()) as unknown;
@@ -363,7 +450,6 @@ describe("09-history-storage", () => {
     }
   });
 
-  // ─── 9.x plan-no-heading slug fallback ────────────────────────────────────
   test("9.4 plan with no heading uses fallback slug plan-YYYY-MM-DD", async () => {
     const daemon = await startDaemon({ port, home: sandbox.home, binary });
     try {
@@ -375,7 +461,6 @@ describe("09-history-storage", () => {
       const files = readdirSync(projectDir).filter((f) => f.endsWith(".md"));
 
       const today = new Date().toISOString().slice(0, 10);
-      // Should have a file starting with "plan-" (fallback slug)
       expect(files.some((f) => f.startsWith("plan-") && f.includes(today))).toBe(true);
     } finally {
       await daemon.stop();
