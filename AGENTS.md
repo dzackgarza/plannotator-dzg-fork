@@ -1,3 +1,12 @@
+> **Planning migration — Spec Kit and itree**
+>
+> Select the work-unit issue with itree. Use Spec Kit to plan and execute the work.
+> The issue body and comments hold the current plan, tasks, progress and evidence.
+> Earlier instructions that assign this work to vault cards or a separate task list
+> identify records to migrate. Match each obligation to its owning issue. Preserve
+> task IDs, order, prerequisites, acceptance criteria and evidence. Verify the transfer
+> on the issue before retiring the old tracker. An open obligation stays open.
+
 # Plannotator
 
 A daemon-backed plan review UI for Claude Code that intercepts `ExitPlanMode` via hooks, letting users approve or request changes with annotated feedback. Also provides code review for git diffs and annotation of arbitrary markdown files.
