@@ -70,7 +70,7 @@ const App: React.FC = () => {
   });
   const [uiPrefs, setUiPrefs] = useState(() => getUIPreferences());
   const [isApiMode, setIsApiMode] = useState(false);
-  const [origin, setOrigin] = useState<'claude-code' | 'opencode' | null>(null);
+  const [origin, setOrigin] = useState<string | null>(null);
   const [globalAttachments, setGlobalAttachments] = useState<ImageAttachment[]>([]);
   const [annotateMode, setAnnotateMode] = useState(false);
   const [imageBaseDir, setImageBaseDir] = useState<string | undefined>(undefined);
@@ -84,7 +84,6 @@ const App: React.FC = () => {
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [initialExportTab, setInitialExportTab] = useState<'annotations' | 'notes'>();
   const [noteSaveToast, setNoteSaveToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  // Plan diff state
   const [isPlanDiffActive, setIsPlanDiffActive] = useState(false);
   const [planDiffMode, setPlanDiffMode] = useState<PlanDiffMode>('clean');
   const [previousPlan, setPreviousPlan] = useState<string | null>(null);
@@ -93,7 +92,6 @@ const App: React.FC = () => {
   const viewerRef = useRef<ViewerHandle>(null);
   const containerRef = useRef<HTMLElement>(null);
 
-  // Resizable panels
   const panelResize = useResizablePanel({ storageKey: 'plannotator-panel-width' });
   const tocResize = useResizablePanel({
     storageKey: 'plannotator-toc-width',
@@ -101,10 +99,8 @@ const App: React.FC = () => {
   });
   const isResizing = panelResize.isDragging || tocResize.isDragging;
 
-  // Sidebar (shared TOC + Version Browser)
   const sidebar = useSidebar(getUIPreferences().tocEnabled);
 
-  // Sync sidebar open state when preference changes in Settings
   useEffect(() => {
     if (uiPrefs.tocEnabled) {
       sidebar.open('toc');
@@ -113,14 +109,12 @@ const App: React.FC = () => {
     }
   }, [uiPrefs.tocEnabled]);
 
-  // Clear diff view when switching away from versions tab
   useEffect(() => {
     if (sidebar.activeTab === 'toc' && isPlanDiffActive) {
       setIsPlanDiffActive(false);
     }
   }, [sidebar.activeTab]);
 
-  // Clear diff view on Escape key
   useEffect(() => {
     if (!isPlanDiffActive) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -132,17 +126,14 @@ const App: React.FC = () => {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isPlanDiffActive]);
 
-  // Plan diff computation
   const planDiff = usePlanDiff(markdown, previousPlan, versionInfo);
 
-  // Linked document navigation
   const linkedDocHook = useLinkedDoc({
     markdown, annotations, selectedAnnotationId, globalAttachments,
     setMarkdown, setAnnotations, setSelectedAnnotationId, setGlobalAttachments,
     viewerRef, sidebar,
   });
 
-  // Obsidian vault browser
   const vaultBrowser = useVaultBrowser();
 
   const showVaultTab = useMemo(() => isVaultBrowserEnabled(), [uiPrefs]);
@@ -152,12 +143,10 @@ const App: React.FC = () => {
     return getEffectiveVaultPath(settings);
   }, [showVaultTab, uiPrefs]);
 
-  // Clear active file when vault browser is disabled
   useEffect(() => {
     if (!showVaultTab) vaultBrowser.setActiveFile(null);
   }, [showVaultTab]);
 
-  // Auto-fetch vault tree when vault tab is first opened
   useEffect(() => {
     if (sidebar.activeTab === 'vault' && showVaultTab && vaultPath && vaultBrowser.tree.length === 0 && !vaultBrowser.isLoading) {
       vaultBrowser.fetchTree(vaultPath);
@@ -170,18 +159,15 @@ const App: React.FC = () => {
     []
   );
 
-  // Vault file selection: open via linked doc system with vault endpoint
   const handleVaultFileSelect = React.useCallback((relativePath: string) => {
     linkedDocHook.open(relativePath, buildVaultDocUrl(vaultPath));
     vaultBrowser.setActiveFile(relativePath);
   }, [vaultPath, linkedDocHook, vaultBrowser, buildVaultDocUrl]);
 
-  // Route linked doc opens through vault endpoint when viewing a vault file
   const handleOpenLinkedDoc = React.useCallback((docPath: string) => {
     if (vaultBrowser.activeFile && vaultPath) {
       linkedDocHook.open(docPath, buildVaultDocUrl(vaultPath));
     } else {
-      // Pass the current file's directory as base for relative path resolution
       const baseDir = linkedDocHook.filepath
         ? linkedDocHook.filepath.replace(/\/[^/]+$/, '')
         : imageBaseDir;
@@ -195,7 +181,6 @@ const App: React.FC = () => {
     }
   }, [vaultBrowser.activeFile, vaultPath, linkedDocHook, buildVaultDocUrl, imageBaseDir]);
 
-  // Wrap linked doc back to also clear vault active file
   const handleLinkedDocBack = React.useCallback(() => {
     linkedDocHook.back();
     vaultBrowser.setActiveFile(null);
@@ -205,11 +190,9 @@ const App: React.FC = () => {
     vaultBrowser.fetchTree(vaultPath);
   }, [vaultBrowser, vaultPath]);
 
-  // Track active section for TOC highlighting
   const headingCount = useMemo(() => blocks.filter(b => b.type === 'heading').length, [blocks]);
   const activeSection = useActiveSection(containerRef, headingCount);
 
-  // Auto-save annotation drafts
   const { draftBanner, restoreDraft, dismissDraft } = useAnnotationDraft({
     annotations,
     globalAttachments,
@@ -224,14 +207,12 @@ const App: React.FC = () => {
     if (restored.length > 0) {
       setAnnotations(restored);
       if (restoredGlobal.length > 0) setGlobalAttachments(restoredGlobal);
-      // Apply highlights to DOM after a tick
       setTimeout(() => {
         viewerRef.current?.applySharedAnnotations(restored);
       }, 100);
     }
   }, [restoreDraft]);
 
-  // Fetch available agents for OpenCode (for validation on approve)
   const { agents: availableAgents, validateAgent, getAgentWarning } = useAgents(origin);
 
   const handleTaterModeChange = (enabled: boolean) => {
@@ -249,17 +230,15 @@ const App: React.FC = () => {
     saveInputMethod(method);
   };
 
-  // Alt/Option key: hold to temporarily switch, double-tap to toggle
   useInputMethodSwitch(inputMethod, handleInputMethodChange);
 
-  // Check if we're in API mode (served from Bun hook server)
   useEffect(() => {
     fetch('/api/plan')
       .then(res => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: 'claude-code' | 'opencode'; mode?: 'annotate'; filePath?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string } }) => {
+      .then((data: { plan: string; origin?: string; mode?: 'annotate'; filePath?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string } }) => {
         if (data.plan) setMarkdown(data.plan);
         setIsApiMode(true);
         if (data.mode === 'annotate') {
@@ -271,7 +250,6 @@ const App: React.FC = () => {
         if (data.repoInfo) {
           setRepoInfo(data.repoInfo);
         }
-        // Capture plan version history data
         if (data.previousPlan !== undefined) {
           setPreviousPlan(data.previousPlan);
         }
@@ -280,16 +258,13 @@ const App: React.FC = () => {
         }
         if (data.origin) {
           setOrigin(data.origin);
-          // For Claude Code, check if user needs to configure permission mode
           if (data.origin === 'claude-code' && needsPermissionModeSetup()) {
             setShowPermissionModeSetup(true);
           }
-          // Load saved permission mode preference
           setPermissionMode(getPermissionModeSettings().mode);
         }
       })
       .catch(() => {
-        // Not in API mode - use default content
         setIsApiMode(false);
       })
       .finally(() => setIsLoading(false));
@@ -301,7 +276,6 @@ const App: React.FC = () => {
     setBlocks(parseMarkdownToBlocks(markdown));
   }, [markdown]);
 
-  // Auto-save to Obsidian on plan arrival (if enabled)
   const autoSaveAttempted = useRef(false);
   useEffect(() => {
     if (!isApiMode || !markdown || annotateMode) return;
@@ -344,7 +318,6 @@ const App: React.FC = () => {
       .finally(() => setTimeout(() => setNoteSaveToast(null), 3000));
   }, [isApiMode, markdown, annotateMode]);
 
-  // Global paste listener for image attachments
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -355,7 +328,6 @@ const App: React.FC = () => {
           e.preventDefault();
           const file = item.getAsFile();
           if (file) {
-            // Derive name before showing annotator so user sees it immediately
             const initialName = deriveImageName(file.name, globalAttachments.map(g => g.name));
             const blobUrl = URL.createObjectURL(file);
             setPendingPasteImage({ file, blobUrl, initialName });
@@ -369,7 +341,6 @@ const App: React.FC = () => {
     return () => document.removeEventListener('paste', handlePaste);
   }, [globalAttachments]);
 
-  // Handle paste annotator accept — name comes from ImageAnnotator
   const handlePasteAnnotatorAccept = async (blob: Blob, hasDrawings: boolean, name: string) => {
     if (!pendingPasteImage) return;
 
@@ -386,7 +357,6 @@ const App: React.FC = () => {
         setGlobalAttachments(prev => [...prev, { path: data.path, name }]);
       }
     } catch {
-      // Upload failed silently
     } finally {
       URL.revokeObjectURL(pendingPasteImage.blobUrl);
       setPendingPasteImage(null);
@@ -400,7 +370,6 @@ const App: React.FC = () => {
     }
   };
 
-  // API mode handlers
   const handleCancel = async () => {
     setIsSubmitting(true);
     try {
@@ -435,21 +404,17 @@ const App: React.FC = () => {
       const agentSwitchSettings = getAgentSwitchSettings();
       const planSaveSettings = getPlanSaveSettings();
 
-      // Build request body - include integrations if enabled
       const body: { obsidian?: object; bear?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string } = {};
 
-      // Include permission mode for Claude Code
       if (origin === 'claude-code') {
         body.permissionMode = permissionMode;
       }
 
-      // Include agent switch setting for OpenCode (effective name handles custom agents)
       const effectiveAgent = getEffectiveAgentName(agentSwitchSettings);
       if (effectiveAgent) {
         body.agentSwitch = effectiveAgent;
       }
 
-      // Include plan save settings
       body.planSave = {
         enabled: planSaveSettings.enabled,
         ...(planSaveSettings.customPath && { customPath: planSaveSettings.customPath }),
@@ -474,7 +439,6 @@ const App: React.FC = () => {
         };
       }
 
-      // Include annotations as feedback if any exist (for OpenCode "approve with notes")
       const hasDocAnnotations = Array.from(linkedDocHook.getDocAnnotations().values()).some(
         (d) => d.annotations.length > 0 || d.globalAttachments.length > 0
       );
@@ -514,7 +478,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Annotate mode handler — sends feedback via /api/feedback
   const handleAnnotateFeedback = async () => {
     setIsSubmitting(true);
     try {
@@ -526,38 +489,30 @@ const App: React.FC = () => {
           annotations,
         }),
       });
-      setSubmitted('denied'); // reuse 'denied' state for "feedback sent" overlay
+      setSubmitted('denied');
     } catch {
       setIsSubmitting(false);
     }
   };
 
-  // Global keyboard shortcuts (Cmd/Ctrl+Enter to submit)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Only handle Cmd/Ctrl+Enter
       if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return;
 
-      // Don't intercept if typing in an input/textarea
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-      // Don't intercept if any modal is open
       if (showExport || showFeedbackPrompt || showClaudeCodeWarning ||
           showAgentWarning || showPermissionModeSetup || pendingPasteImage) return;
 
-      // Don't intercept if already submitted or submitting
       if (submitted || isSubmitting) return;
 
-      // Don't intercept in demo/share mode (no API)
       if (!isApiMode) return;
 
-      // Don't submit while viewing a linked doc
       if (linkedDocHook.isActive) return;
 
       e.preventDefault();
 
-      // Annotate mode: always send feedback
       if (annotateMode) {
         if (annotations.length === 0) {
           setShowFeedbackPrompt(true);
@@ -567,9 +522,7 @@ const App: React.FC = () => {
         return;
       }
 
-      // No annotations → Approve, otherwise → Send Feedback
       if (annotations.length === 0 && editorAnnotations.length === 0) {
-        // Check if agent exists for OpenCode users
         if (origin === 'opencode') {
           const warning = getAgentWarning();
           if (warning) {
@@ -599,7 +552,6 @@ const App: React.FC = () => {
     setIsPanelOpen(true);
   };
 
-  // Stable reference — the Viewer's highlighter useEffect depends on this
   const handleSelectAnnotation = React.useCallback((id: string | null) => {
     setSelectedAnnotationId(id);
     if (id && window.innerWidth < 768) setIsPanelOpen(true);
@@ -633,8 +585,6 @@ const App: React.FC = () => {
 
 
   const handleTocNavigate = (blockId: string) => {
-    // Navigation handled by TableOfContents component
-    // This is just a placeholder for future custom logic
   };
 
   const annotationsOutput = useMemo(() => {
@@ -664,7 +614,6 @@ const App: React.FC = () => {
     return output;
   }, [blocks, annotations, globalAttachments, linkedDocHook.getDocAnnotations, editorAnnotations]);
 
-  // Quick-save handlers for export dropdown and keyboard shortcut
   const handleDownloadAnnotations = () => {
     setShowExportDropdown(false);
     const blob = new Blob([annotationsOutput], { type: 'text/plain' });
@@ -723,7 +672,6 @@ const App: React.FC = () => {
     setTimeout(() => setNoteSaveToast(null), 3000);
   };
 
-  // Cmd/Ctrl+S keyboard shortcut — save to default notes app
   useEffect(() => {
     const handleSaveShortcut = (e: KeyboardEvent) => {
       if (e.key !== 's' || !(e.metaKey || e.ctrlKey)) return;
@@ -762,7 +710,6 @@ const App: React.FC = () => {
     submitted, isApiMode, markdown, annotationsOutput,
   ]);
 
-  // Close export dropdown on click outside
   useEffect(() => {
     if (!showExportDropdown) return;
     const handleClickOutside = (e: PointerEvent) => {
@@ -789,9 +736,7 @@ const App: React.FC = () => {
   return (
     <ThemeProvider defaultTheme="dark">
       <div className="h-screen flex flex-col bg-background overflow-hidden">
-        {/* Tater sprites */}
         {taterMode && <TaterSpriteRunning />}
-        {/* Minimal Header */}
         <header className="h-12 flex items-center justify-between px-2 md:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl sticky top-0 z-[50]">
           <div className="flex items-center gap-2 md:gap-3">
             <a
@@ -881,13 +826,11 @@ const App: React.FC = () => {
                 {!annotateMode && <div className="relative group/approve">
                   <button
                     onClick={() => {
-                      // Show warning for Claude Code users with annotations
                       if (origin === 'claude-code' && annotations.length > 0) {
                         setShowClaudeCodeWarning(true);
                         return;
                       }
 
-                      // Check if agent exists for OpenCode users
                       if (origin === 'opencode') {
                         const warning = getAgentWarning();
                         if (warning) {
@@ -924,7 +867,6 @@ const App: React.FC = () => {
               </>
             )}
 
-            {/* Desktop buttons — hidden on mobile */}
             <div className="hidden md:flex items-center gap-2">
               <ModeToggle />
               {!linkedDocHook.isActive && <Settings taterMode={taterMode} onTaterModeChange={handleTaterModeChange} onIdentityChange={handleIdentityChange} origin={origin} onUIPreferencesChange={setUiPrefs} externalOpen={mobileSettingsOpen} onExternalClose={() => setMobileSettingsOpen(false)} />}
@@ -1003,7 +945,6 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Mobile hamburger menu */}
             <MobileMenu
               className="md:hidden"
               isPanelOpen={isPanelOpen}
@@ -1016,7 +957,6 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        {/* Linked document error banner */}
         {linkedDocHook.error && (
           <div className="bg-destructive/10 border-b border-destructive/20 px-4 py-2 flex items-center gap-2 flex-shrink-0">
             <span className="text-xs text-destructive">{linkedDocHook.error}</span>
@@ -1029,9 +969,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Main Content */}
         <div className={`flex-1 flex overflow-hidden relative z-0 ${isResizing ? 'select-none' : ''}`}>
-          {/* Left Sidebar: collapsed tab flags (when sidebar is closed) */}
           {!sidebar.isOpen && (
             <SidebarTabs
               activeTab={sidebar.activeTab}
@@ -1042,7 +980,6 @@ const App: React.FC = () => {
             />
           )}
 
-          {/* Left Sidebar: open state (TOC or Version Browser) */}
           {sidebar.isOpen && (
             <>
               <SidebarContainer
@@ -1079,7 +1016,6 @@ const App: React.FC = () => {
             </>
           )}
 
-          {/* Document Area */}
           <main ref={containerRef} className="flex-1 min-w-0 overflow-y-auto bg-grid">
             <ConfirmDialog
               isOpen={!!draftBanner}
@@ -1092,7 +1028,6 @@ const App: React.FC = () => {
               showCancel
             />
             <div className="min-h-full flex flex-col items-center px-2 py-3 md:px-10 md:py-8 xl:px-16">
-              {/* Annotation Toolstrip (hidden during plan diff) */}
               {!isPlanDiffActive && (
                 <div className="w-full mb-3 md:mb-4 flex items-center justify-start" style={{ maxWidth: planMaxWidth }}>
                   <AnnotationToolstrip
@@ -1105,7 +1040,6 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Plan Diff View or Normal Plan View */}
               {isPlanDiffActive && planDiff.diffBlocks && planDiff.diffStats ? (
                 <PlanDiffViewer
                   diffBlocks={planDiff.diffBlocks}
@@ -1151,10 +1085,8 @@ const App: React.FC = () => {
             </div>
           </main>
 
-          {/* Resize Handle */}
           {isPanelOpen && <ResizeHandle {...panelResize.handleProps} className="hidden md:block" />}
 
-          {/* Annotation Panel */}
           <AnnotationPanel
             isOpen={isPanelOpen}
             blocks={blocks}
@@ -1173,7 +1105,6 @@ const App: React.FC = () => {
           />
         </div>
 
-        {/* Export Modal */}
         <ExportModal
           isOpen={showExport}
           onClose={() => { setShowExport(false); setInitialExportTab(undefined); }}
@@ -1185,7 +1116,6 @@ const App: React.FC = () => {
           initialTab={initialExportTab}
         />
 
-        {/* Feedback prompt dialog */}
         <ConfirmDialog
           isOpen={showFeedbackPrompt}
           onClose={() => setShowFeedbackPrompt(false)}
@@ -1194,7 +1124,6 @@ const App: React.FC = () => {
           variant="info"
         />
 
-        {/* Claude Code annotation warning dialog */}
         <ConfirmDialog
           isOpen={showClaudeCodeWarning}
           onClose={() => setShowClaudeCodeWarning(false)}
@@ -1281,7 +1210,6 @@ const App: React.FC = () => {
           onClose={handlePasteAnnotatorClose}
         />
 
-        {/* Permission Mode Setup (Claude Code first-time) */}
         <PermissionModeSetup
           isOpen={showPermissionModeSetup}
           onComplete={(mode) => {

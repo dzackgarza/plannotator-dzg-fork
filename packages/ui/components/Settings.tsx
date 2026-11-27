@@ -57,11 +57,9 @@ interface SettingsProps {
   taterMode: boolean;
   onTaterModeChange: (enabled: boolean) => void;
   onIdentityChange?: (oldIdentity: string, newIdentity: string) => void;
-  origin?: 'claude-code' | 'opencode' | null;
-  /** Mode determines which settings are shown. 'plan' shows all, 'review' shows only identity + agent switching */
+  origin?: string | null;
   mode?: 'plan' | 'review';
   onUIPreferencesChange?: (prefs: UIPreferences) => void;
-  /** Externally controlled open state (for mobile menu integration) */
   externalOpen?: boolean;
   onExternalClose?: () => void;
 }
@@ -90,7 +88,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const [editingTipValue, setEditingTipValue] = useState('');
   const [showNewHints, setShowNewHints] = useState(() => hasNewSettings());
 
-  // Fetch available agents for OpenCode
   const { agents: availableAgents, validateAgent, getAgentWarning } = useAgents(origin ?? null);
 
   const mainTabs = useMemo(() => {
@@ -109,7 +106,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
     ? [{ id: 'obsidian', label: 'Obsidian' }, { id: 'bear', label: 'Bear' }]
     : [];
 
-  // Sync external open state
   useEffect(() => {
     if (externalOpen) {
       setShowDialog(true);
@@ -131,14 +127,12 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       setDefaultNotesApp(getDefaultNotesApp());
       setQuickLabelsState(getQuickLabels());
 
-      // Validate agent setting when dialog opens
       if (origin === 'opencode') {
         setAgentWarning(getAgentWarning());
       }
     }
   }, [showDialog, availableAgents, origin, getAgentWarning]);
 
-  // Fetch detected vaults when Obsidian is enabled
   useEffect(() => {
     if (obsidian.enabled && detectedVaults.length === 0 && !vaultsLoading) {
       setVaultsLoading(true);
@@ -146,7 +140,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
         .then(res => res.json())
         .then((data: { vaults: string[] }) => {
           setDetectedVaults(data.vaults || []);
-          // Auto-select first vault if none set
           if (data.vaults?.length > 0 && !obsidian.vaultPath) {
             handleObsidianChange({ vaultPath: data.vaults[0] });
           }
@@ -246,7 +239,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
             </div>
 
             <div className="flex flex-col md:flex-row md:min-h-[420px]">
-              {/* Mobile: horizontal tab bar */}
               <nav className="md:hidden flex overflow-x-auto border-b border-border px-2 py-1.5 gap-1 flex-shrink-0">
                 {[...mainTabs, ...integrationTabs].map(tab => (
                   <button
@@ -266,7 +258,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                 ))}
               </nav>
 
-              {/* Desktop: sidebar */}
               <nav className="hidden md:block w-40 border-r border-border p-2 flex-shrink-0">
                 <div className="space-y-0.5">
                   {mainTabs.map(tab => (
@@ -311,13 +302,10 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                 )}
               </nav>
 
-              {/* Content — scrollable */}
               <div className="flex-1 p-4 space-y-4 overflow-y-auto max-h-[85vh]">
 
-                {/* === GENERAL TAB === */}
                 {activeTab === 'general' && (
                   <>
-                    {/* Identity */}
                     <div className="space-y-2">
                       <div className="text-sm font-medium">Your Identity</div>
                       <div className="text-xs text-muted-foreground">
@@ -339,7 +327,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                       </div>
                     </div>
 
-                    {/* Permission Mode (Claude Code only) */}
                     {origin === 'claude-code' && mode === 'plan' && (
                       <>
                         <div className="border-t border-border" />
@@ -368,7 +355,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                       </>
                     )}
 
-                    {/* Agent Switching (OpenCode only) */}
                     {origin === 'opencode' && (
                       <>
                         <div className="border-t border-border" />
@@ -456,7 +442,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                     <div className="border-t border-border" />
 
-                    {/* Auto-close Tab */}
                     <div className="space-y-2">
                       <div className="text-sm font-medium">Auto-close Tab</div>
                       <select
@@ -481,13 +466,10 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                   </>
                 )}
 
-                {/* === THEME TAB === */}
                 {activeTab === 'theme' && <ThemeTab />}
 
-                {/* === DISPLAY TAB === */}
                 {activeTab === 'display' && (
                   <>
-                    {/* Auto-open Sidebar */}
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-sm font-medium">Auto-open Sidebar</div>
@@ -513,7 +495,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                     <div className="border-t border-border" />
 
-                    {/* Sticky Actions */}
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-sm font-medium">Sticky Actions</div>
@@ -539,7 +520,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                     <div className="border-t border-border" />
 
-                    {/* Plan Width */}
                     <div className="space-y-3">
                       <div>
                         <div className="text-sm font-medium flex items-center gap-2">Plan Width{showNewHints && <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-primary/15 text-primary leading-none">new</span>}</div>
@@ -563,10 +543,8 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                         ))}
                       </div>
 
-                      {/* Abstract layout preview — exaggerated proportions for visual clarity */}
                       {(() => {
                         const active = PLAN_WIDTH_OPTIONS.find(o => o.id === uiPrefs.planWidth) ?? PLAN_WIDTH_OPTIONS[0];
-                        // Exaggerated proportions so the width difference is visually obvious in the small preview
                         const sidebarPct = 14;
                         const panelPct = 14;
                         const cardPctMap: Record<PlanWidth, number> = { compact: 48, default: 70, wide: 94 };
@@ -574,7 +552,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                         return (
                           <div className="space-y-2">
                             <div className="rounded-lg border border-border/40 bg-muted/20 px-2 py-3 overflow-hidden">
-                              {/* Simulated header bar */}
                               <div className="flex items-center justify-between mb-2 px-1">
                                 <div className="h-0.5 w-8 rounded-full bg-foreground/15" />
                                 <div className="flex gap-1">
@@ -584,9 +561,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                                 </div>
                               </div>
                               <div className="border-t border-foreground/5 mb-2" />
-                              {/* Three-column layout */}
                               <div className="flex gap-1 items-stretch" style={{ minHeight: 64 }}>
-                                {/* Sidebar */}
                                 <div className="flex-shrink-0 space-y-1 pt-0.5 opacity-30" style={{ width: `${sidebarPct}%` }}>
                                   <div className="h-0.5 w-full rounded-full bg-foreground" />
                                   <div className="h-0.5 w-3/4 rounded-full bg-foreground" />
@@ -594,34 +569,28 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                                   <div className="h-0.5 w-2/3 rounded-full bg-foreground" />
                                   <div className="h-0.5 w-1/2 rounded-full bg-foreground" />
                                 </div>
-                                {/* Plan card — width animates */}
                                 <div className="flex-1 flex justify-center min-w-0">
                                   <div
                                     className="rounded border border-border/60 bg-card/50 p-1.5 space-y-1 transition-all duration-300 ease-out"
                                     style={{ width: `${cardPct}%`, minWidth: 0 }}
                                   >
-                                    {/* Heading */}
                                     <div className="h-1 w-2/5 rounded-full bg-foreground/25" />
-                                    {/* Prose lines */}
                                     <div className="space-y-[2px]">
                                       <div className="h-[2px] w-full rounded-full bg-foreground/10" />
                                       <div className="h-[2px] w-11/12 rounded-full bg-foreground/10" />
                                       <div className="h-[2px] w-4/5 rounded-full bg-foreground/10" />
                                     </div>
-                                    {/* Code block */}
                                     <div className="rounded bg-muted/60 p-1 space-y-[2px]">
                                       <div className="h-[2px] w-full rounded-full bg-primary/20" />
                                       <div className="h-[2px] w-3/4 rounded-full bg-primary/20" />
                                       <div className="h-[2px] w-5/6 rounded-full bg-primary/20" />
                                     </div>
-                                    {/* More prose */}
                                     <div className="space-y-[2px]">
                                       <div className="h-[2px] w-full rounded-full bg-foreground/10" />
                                       <div className="h-[2px] w-3/4 rounded-full bg-foreground/10" />
                                     </div>
                                   </div>
                                 </div>
-                                {/* Annotation panel */}
                                 <div className="flex-shrink-0 space-y-1 pt-0.5 opacity-20" style={{ width: `${panelPct}%` }}>
                                   <div className="rounded border border-foreground/20 p-0.5 space-y-[2px]">
                                     <div className="h-[2px] w-full rounded-full bg-foreground" />
@@ -644,7 +613,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                     <div className="border-t border-border" />
 
-                    {/* Tater Mode */}
                     <div className="flex items-center justify-between">
                       <div className="text-sm font-medium">Tater Mode</div>
                       <button
@@ -665,10 +633,8 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                   </>
                 )}
 
-                {/* === SAVING TAB === */}
                 {activeTab === 'saving' && (
                   <>
-                    {/* Plan Saving */}
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <div>
@@ -712,7 +678,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                     <div className="border-t border-border" />
 
-                    {/* Default Notes App */}
                     <div className="space-y-2">
                       <div>
                         <div className="text-sm font-medium">Default Save Action</div>
@@ -741,7 +706,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                     <div className="border-t border-border" />
 
-                    {/* Integration links */}
                     <div className="space-y-2">
                       <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
                         Integrations
@@ -778,7 +742,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                   </>
                 )}
 
-                {/* === LABELS TAB === */}
                 {activeTab === 'labels' && (
                   <>
                     <div className="flex items-center justify-between">
@@ -812,7 +775,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                         const isEditingTip = editingTipIndex === index;
                         return (
                           <div key={index} className="rounded-lg overflow-hidden" style={{ backgroundColor: colors.bg }}>
-                            {/* Main row */}
                             <div className="flex items-center gap-2 p-2">
                               <span className="text-sm flex-shrink-0">{label.emoji}</span>
                               <input
@@ -830,7 +792,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                                 }}
                                 className="flex-1 px-2 py-1 bg-background/80 rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
                               />
-                              {/* Tip indicator button */}
                               <button
                                 onClick={() => {
                                   if (isEditingTip) {
@@ -886,7 +847,6 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                                 </svg>
                               </button>
                             </div>
-                            {/* Tip editor — slides open below the row */}
                             {isEditingTip && (
                               <div
                                 className="flex items-center gap-1.5 px-2 pb-2 pt-0"
@@ -961,12 +921,10 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                   </>
                 )}
 
-                {/* === SHORTCUTS TAB === */}
                 {activeTab === 'shortcuts' && (
                   <KeyboardShortcuts mode={mode} />
                 )}
 
-                {/* === OBSIDIAN TAB === */}
                 {activeTab === 'obsidian' && (
                   <>
                     <div className="flex items-center justify-between">
@@ -1167,7 +1125,6 @@ tags: [plan, ...]
                   </>
                 )}
 
-                {/* === BEAR TAB === */}
                 {activeTab === 'bear' && (
                   <>
                     <div className="flex items-center justify-between">

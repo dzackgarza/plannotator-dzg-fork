@@ -9,7 +9,7 @@ function getInstallCommand(): string {
 }
 
 interface UpdateBannerProps {
-  origin?: 'claude-code' | 'opencode' | null;
+  origin?: string | null;
 }
 
 export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
@@ -17,7 +17,6 @@ export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
   const [copied, setCopied] = useState(false);
   const [dismissed, setDismissed] = useState(false);
 
-  // Debug: ?preview-origin=opencode to test OpenCode-specific UI
   const urlParams = new URLSearchParams(window.location.search);
   const previewOrigin = urlParams.get('preview-origin');
   const effectiveOrigin = previewOrigin || origin;
@@ -38,12 +37,10 @@ export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
 
   const hasFeature = !!updateInfo.featureHighlight;
 
-  // Expanded banner for milestone releases with feature highlights
   if (hasFeature) {
     return (
       <div className="fixed bottom-4 right-4 z-50 max-w-md animate-in slide-in-from-bottom-2 fade-in duration-300">
         <div className="bg-card border border-primary/30 rounded-xl shadow-2xl overflow-hidden">
-          {/* Feature highlight header */}
           <div className="bg-gradient-to-r from-primary/20 to-primary/5 px-5 py-4 border-b border-border/50">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
@@ -72,7 +69,6 @@ export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
             </div>
           </div>
 
-          {/* Feature description */}
           <div className="px-5 py-4">
             <p className="text-sm text-foreground/80 leading-relaxed">
               {updateInfo.featureHighlight!.description}
@@ -82,7 +78,6 @@ export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
               You have {updateInfo.currentVersion}
             </p>
 
-            {/* Agent-specific extra instructions */}
             {isOpenCode && (
               <p className="text-xs text-muted-foreground mt-3">
                 Run the install script, then restart OpenCode.
@@ -111,7 +106,6 @@ export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {
     );
   }
 
-  // Standard update banner
   return (
     <div className="fixed bottom-4 right-4 z-50 max-w-sm animate-in slide-in-from-bottom-2 fade-in duration-300">
       <div className="bg-card border border-border rounded-lg shadow-xl p-4">

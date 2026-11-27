@@ -1,12 +1,3 @@
-/**
- * Plannotator Shared Server
- *
- * Provides a consistent server implementation for both Claude Code and OpenCode plugins.
- *
- * Environment variables:
- *   PLANNOTATOR_PORT   - Optional fixed port for the local review server
- *   PLANNOTATOR_ORIGIN - Origin identifier ("claude-code" or "opencode")
- */
 
 import { getServerPort } from "./port";
 import { openEditorDiff } from "./ide";
@@ -39,7 +30,6 @@ import { createDaemonRouter, type DaemonRouterEvent } from "./daemon-router";
 import { createDaemonEventBus } from "./daemon-events";
 import { transition, type DaemonState, type FeedbackPayload } from "./state";
 
-// Re-export utilities
 export { getServerPort } from "./port";
 export { openBrowser } from "./browser";
 export * from "./integrations";
@@ -49,33 +39,21 @@ export * from "./notify";
 export { handleServerReady } from "./shared-handlers";
 export { type VaultNode, buildFileTree } from "./reference-handlers";
 
-// --- Types ---
 
 export interface ServerOptions {
-  /** The plan markdown content */
   plan: string;
-  /** Origin identifier (e.g., "claude-code", "opencode") */
   origin: string;
-  /** HTML content to serve for the UI */
   htmlContent: string;
-  /** Current permission mode to preserve (Claude Code only) */
   permissionMode?: string;
-  /** Called when server starts with the URL, remote status, and port */
   onReady?: (url: string, isRemote: boolean, port: number) => void;
-  /** OpenCode client for querying available agents (OpenCode only) */
   opencodeClient?: OpencodeClient;
-  /** Commit message provided by the agent for the plan version */
   commitMessage?: string;
 }
 
 export interface ServerResult {
-  /** The port the server is running on */
   port: number;
-  /** The full URL to access the server */
   url: string;
-  /** Whether running in remote mode */
   isRemote: boolean;
-  /** Wait for user decision (approve/deny) */
   waitForDecision: () => Promise<{
     approved: boolean;
     feedback?: string;
@@ -84,7 +62,6 @@ export interface ServerResult {
     permissionMode?: string;
     cancelled?: boolean;
   }>;
-  /** Stop the server */
   stop: () => void;
 }
 
@@ -97,20 +74,10 @@ type PlanDecisionResult = {
   cancelled?: boolean;
 };
 
-// --- Server Implementation ---
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 500;
 
-/**
- * Start the Plannotator server
- *
- * Handles:
- * - Remote detection and port configuration
- * - All API routes (/api/plan, /api/approve, /api/deny, etc.)
- * - Obsidian/Bear integrations
- * - Port conflict retries
- */
 export async function startPlannotatorServer(
   options: ServerOptions
 ): Promise<ServerResult> {
@@ -121,13 +88,10 @@ export async function startPlannotatorServer(
   const draftKey = contentHash(plan);
   const editorAnnotations = createEditorAnnotationHandler();
 
-  // Generate slug for potential saving (actual save happens on decision)
   const slug = generateSlug(plan);
 
-  // Detect repo info (cached for this session)
   const repoInfo = await getRepoInfo();
 
-  // Version history: save plan and detect previous version
   const project = (await detectProjectName()) ?? "_unknown";
   const historyResult = await saveToHistory(project, slug, plan, commitMessage, origin);
   const currentPlanPath = historyResult.path;
@@ -147,7 +111,7 @@ export async function startPlannotatorServer(
     document: {
       id: slug,
       mode: "plan",
-      origin: origin as "claude-code" | "opencode",
+      origin,
       content: plan,
     },
     feedback: null,
@@ -177,7 +141,6 @@ export async function startPlannotatorServer(
     });
   });
 
-  // Handle CLI signals for graceful cancellation
   const handleSignal = () => {
     if (currentState.status !== "awaiting-response") {
       return;
@@ -207,14 +170,12 @@ export async function startPlannotatorServer(
   process.on("SIGINT", handleSignal);
   process.on("SIGTERM", handleSignal);
 
-  // Cleanup: unregister signal handlers and stop the server.
   const cleanup = () => {
     process.off("SIGINT", handleSignal);
     process.off("SIGTERM", handleSignal);
     server?.stop();
   };
 
-  // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -495,7 +456,7 @@ export async function startPlannotatorServer(
         fetch: router.fetch,
       });
 
-      break; // Success, exit retry loop
+      break;
     } catch (err: unknown) {
       const isAddressInUse =
         err instanceof Error && err.message.includes("EADDRINUSE");
@@ -525,7 +486,6 @@ export async function startPlannotatorServer(
 
   const serverUrl = `http://localhost:${server.port}`;
 
-  // Notify caller that server is ready
   if (onReady) {
     onReady(serverUrl, false, server.port);
   }

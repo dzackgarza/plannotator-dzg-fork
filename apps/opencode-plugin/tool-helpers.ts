@@ -56,7 +56,6 @@ class CliTimeoutError extends Error {
   }
 }
 
-/** Resolves the plannotator CLI command. Supports PLANNOTATOR_CLI_ENTRYPOINT env override for testing. */
 function resolvePlannotatorCommand(directory: string): CliCommand {
   const envOverride: string | undefined = process.env.PLANNOTATOR_CLI_ENTRYPOINT;
   if (envOverride !== undefined) {
@@ -129,7 +128,6 @@ async function runPlannotatorCli(
                 try {
                   child.kill("SIGTERM");
                 } catch {
-                  // The subprocess may have already exited.
                 }
                 reject(
                   new CliTimeoutError(
@@ -284,13 +282,14 @@ export async function runPlannotatorSubmitCli(
     },
   });
 
-  const result = await runPlannotatorCli(["submit", "--json"], env.directory, {
+  const cliArgs = ["submit", "--json", "--origin", "opencode"];
+  const result = await runPlannotatorCli(cliArgs, env.directory, {
     stdinText,
     timeoutMs,
   });
 
   if (result.exitCode !== 0 && result.exitCode !== 1) {
-    throw new Error(describeCliFailure(["submit", "--json"], result));
+    throw new Error(describeCliFailure(cliArgs, result));
   }
 
   return parseCliVerdict(result.stdout);

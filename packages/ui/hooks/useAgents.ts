@@ -1,6 +1,3 @@
-/**
- * Hook for fetching and validating OpenCode agents
- */
 
 import { useState, useEffect, useCallback } from 'react';
 import { getAgentSwitchSettings } from '../utils/agentSwitch';
@@ -14,17 +11,11 @@ export interface Agent {
 export interface UseAgentsResult {
   agents: Agent[];
   isLoading: boolean;
-  /** Validate if an agent exists (case-insensitive) */
   validateAgent: (agentName: string) => boolean;
-  /** Get warning message if current settings point to invalid agent, null if valid */
   getAgentWarning: () => string | null;
 }
 
-/**
- * Fetch available agents from OpenCode API
- * Only fetches when origin is 'opencode'
- */
-export function useAgents(origin: 'claude-code' | 'opencode' | null): UseAgentsResult {
+export function useAgents(origin: string | null): UseAgentsResult {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -48,12 +39,12 @@ export function useAgents(origin: 'claude-code' | 'opencode' | null): UseAgentsR
   }, [origin]);
 
   const validateAgent = useCallback((agentName: string): boolean => {
-    if (agents.length === 0) return true; // No agents = can't validate, assume ok
+    if (agents.length === 0) return true;
     return agents.some(a => a.id.toLowerCase() === agentName.toLowerCase());
   }, [agents]);
 
   const getAgentWarning = useCallback((): string | null => {
-    if (agents.length === 0) return null; // Can't validate without agents
+    if (agents.length === 0) return null;
 
     const settings = getAgentSwitchSettings();
 
@@ -71,7 +62,6 @@ export function useAgents(origin: 'claude-code' | 'opencode' | null): UseAgentsR
       return null;
     }
 
-    // Regular agent selection
     const exists = validateAgent(settings.switchTo);
     if (!exists) {
       return `Agent "${settings.switchTo}" not found in OpenCode. Select another or it may cause errors.`;
